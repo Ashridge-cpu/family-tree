@@ -375,7 +375,7 @@ function renderList(){
 }
 $('#search').addEventListener('input',renderList);
 $('#list').addEventListener('click',e=>{const li=e.target.closest('.li');if(li){select(li.dataset.id,true);if(SMALL)$('#left').classList.remove('show')}});
-function relLinks(ids,extra){return ids.map(i=>`<a data-go="${esc(i)}">${esc(nick(P()[i])||fullName(P()[i]))}</a>${extra?extra(i):''}`).join(', ')}
+function relLinks(ids,extra,kind){return ids.map(i=>`<a data-go="${esc(i)}">${esc(nick(P()[i])||fullName(P()[i]))}</a>${extra?extra(i):''}${kind?` <button class="x" data-unlink="${kind}:${esc(i)}" title="Remove this link (nobody is deleted)">✕</button>`:''}`).join(', ')}
 function renderDetails(){
   const p=P()[sel],D=$('#details');if(!p){D.innerHTML='<p style="color:var(--mut)">Select someone in the tree.</p>';return}
   const b=p.birth?`b. ${esc(p.birth)}`:'',d=p.death?`d. ${esc(p.death)}`:(p.deceased?'Deceased':'');
@@ -385,11 +385,12 @@ function renderDetails(){
    <div class="dates">${esc(years(p))}</div>
    <div class="places">${[b&&b+(p.birthPlace?', '+esc(p.birthPlace):''),d&&d+(p.deathPlace?', '+esc(p.deathPlace):'')].filter(Boolean).join('<br>')}</div>
    <div class="sec rel" style="font-size:16px;line-height:1.5">
-    ${par.length?`<div><span class="gold">Parents:</span> ${relLinks(par)}</div>`:''}
-    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>p.marr?.[i]?` <small>(m. ${esc(p.marr[i])})</small>`:'')}</div>`:''}
+    ${par.length?`<div><span class="gold">Parents:</span> ${relLinks(par,null,'parent')}</div>`:''}
+    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>p.marr?.[i]?` <small>(m. ${esc(p.marr[i])})</small>`:'','spouse')}</div>`:''}
     ${sib.length?`<div><span class="gold">Brothers &amp; sisters:</span> ${relLinks(sib)}</div>`:''}
-    ${kids.length?`<div><span class="gold">Children:</span> ${relLinks(kids)}</div>`:''}
+    ${kids.length?`<div><span class="gold">Children:</span> ${relLinks(kids,null,'child')}</div>`:''}
     ${!par.length&&!sp.length&&!kids.length&&!sib.length?'<div style="color:var(--mut)">No relatives linked yet.</div>':''}
+    <div style="margin-top:6px"><button class="mini" data-do="link">🔗 Link to someone already in the tree</button></div>
    </div>
    <div class="sec"><h3>Notes <button class="mini" data-do="edit">Edit</button></h3><div class="notes">${esc(p.notes)||'<span style="color:var(--mut)">No notes yet.</span>'}</div></div>
    <div class="sec"><h3>Gallery <button class="mini" data-do="addphoto">+ Add photos</button></h3>
@@ -401,10 +402,11 @@ function renderDetails(){
     <div style="font-size:13px;color:var(--mut)">A short silent looping video (MP4/WebM, a few seconds, max 6 MB) that plays in the frame when you're close, like the moving portraits in Harry Potter.</div></div>
    <div class="sec" style="display:flex;justify-content:space-between;gap:8px"><button class="mini" data-do="edit">Edit details</button><button class="mini danger" data-do="delete">Delete person</button></div>`;
 }
-$('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do]');if(!t)return;
+$('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do],[data-unlink]');if(!t)return;
+  if(t.dataset.unlink){const [k,...r]=t.dataset.unlink.split(':');return unlink(sel,k,r.join(':'))}
   if(t.dataset.go)return select(t.dataset.go,true); if(t.dataset.view)return openViewer(t.dataset.view);
   const a=t.dataset.do;
-  if(a==='edit')personDialog('edit');else if(a==='delete')deletePerson();
+  if(a==='edit')personDialog('edit');else if(a==='link')personDialog('link');else if(a==='delete')deletePerson();
   else if(a==='addphoto')pickFile('image/*',f=>addMedia(sel,f,'photo'));
   else if(a==='adddoc')pickFile('image/*,application/pdf,.pdf',f=>addMedia(sel,f,'doc'));
   else if(a==='addvid')pickFile('video/mp4,video/webm,video/quicktime',f=>addMedia(sel,f,'video'));
@@ -442,6 +444,30 @@ function personDialog(act){
     c.parents=[...par];await save(c);select(c.id,true)});
   if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},`${field('fMarr','Marriage (date and place, optional)','','e.g. 1985, Exeter')}`),async()=>{const c=blank();if(!readForm(c))return false;
     const m=$('#fMarr').value.trim().slice(0,120);c.spouses=[s.id];if(m)c.marr={[s.id]:m};await save(c);const q=structuredClone(s);q.spouses=[...new Set([...(q.spouses||[]),c.id])];if(m)q.marr={...(q.marr||{}),[c.id]:m};await save(q);select(c.id,true)});
+  if(act==='link'){const others=Object.values(P()).filter(p=>p.id!==s.id).sort((x,y)=>fullName(x).localeCompare(fullName(y)));
+    return dlg(`<h2>Link ${esc(nm)} to someone already in the tree</h2>
+      <label for="lRel">${esc(nm)} is the…</label><select id="lRel"><option value="spouse">Partner / spouse of</option><option value="child">Parent of</option><option value="parent">Child of</option></select>
+      <label for="lWho">…this person</label><select id="lWho">${others.map(p=>`<option value="${esc(p.id)}">${esc(fullName(p))}${p.birth?' ('+esc(p.birth)+')':''}</option>`).join('')}</select>
+      <div id="lMarrBox">${field('lMarr','Marriage (date and place, optional)','','e.g. 2015, Banbury')}</div>
+      <p style="font-size:13px;color:var(--mut)">This only joins two people who are already in the tree; nobody new is created. Use the ✕ next to a name to undo a link.</p>`,async()=>{
+      const rel=$('#lRel').value,o=$('#lWho').value;if(!o||!P()[o])return false;
+      if(rel==='spouse'){const m=$('#lMarr').value.trim().slice(0,120);
+        if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
+        for(const [x,y] of [[s.id,o],[o,s.id]]){const q=structuredClone(P()[x]);q.spouses=[...new Set([...(q.spouses||[]),y])];if(m)q.marr={...(q.marr||{}),[y]:m};await save(q)}}
+      else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
+        if(cur.includes(parent))return toast('Already linked.'),false;
+        const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(child);
+        if(child===parent||desc.has(parent))return toast('That would make someone their own ancestor.'),false;
+        const ph=cur.find(x=>P()[x].unknown);
+        if(cur.length>=2&&!ph)return toast(fullName(q)+' already has two parents. Remove one with ✕ first.'),false;
+        q.parents=[...cur.filter(x=>x!==ph),parent];await save(q);
+        if(ph&&!childrenOf(ph).length)await store.del('persons',ph);
+        // a child's two parents are usually partners: offer to join them
+        const op=q.parents.find(x=>x!==parent);
+        if(op&&!spousesOf(parent).includes(op)&&confirm('Also link '+fullName(P()[parent])+' and '+fullName(P()[op])+' as partners?'))
+          for(const [x,y] of [[parent,op],[op,parent]]){const r=structuredClone(P()[x]);r.spouses=[...new Set([...(r.spouses||[]),y])];await save(r)}}
+      toast('Linked.');select(s.id,true)},{saveLabel:'Link'}),
+      $('#lRel').onchange=()=>{$('#lMarrBox').style.display=$('#lRel').value==='spouse'?'':'none'}}
   if(act==='parent'){const par=parentsOf(s.id),ph=par.find(i=>P()[i].unknown);
     if(ph){sel=ph;return dlg(`<h2>Add a parent of ${esc(nm)}</h2>`+personForm({sex:'U'}),async()=>{const q=structuredClone(P()[ph]);if(!readForm(q))return false;await save(q);select(q.id,true)})}
     if(par.length>=2)return toast(nm+' already has two parents in the tree. Select one of them to edit.');
@@ -453,6 +479,12 @@ function personDialog(act){
       for(const k of [s.id,...(sibs.length&&$('#fSibs')?.checked?sibs:[])]){const q=structuredClone(P()[k]);q.parents=[...new Set([...(q.parents||[]),c.id])].slice(0,2);await save(q)}
       select(c.id,true)})}
 }
+async function unlink(id,kind,o){const A=P()[id],B=P()[o];if(!A||!B)return;
+  const words={spouse:'as partners',parent:`(${fullName(B)} as parent of ${fullName(A)})`,child:`(${fullName(B)} as child of ${fullName(A)})`}[kind];
+  if(!confirm(`Remove the link between ${fullName(A)} and ${fullName(B)} ${words}? Nobody is deleted.`))return;
+  if(kind==='spouse'){for(const [x,y] of [[id,o],[o,id]]){const q=structuredClone(P()[x]);q.spouses=(q.spouses||[]).filter(z=>z!==y);if(q.marr)delete q.marr[y];await save(q)}}
+  else{const child=kind==='parent'?id:o,parent=kind==='parent'?o:id;const q=structuredClone(P()[child]);q.parents=(q.parents||[]).filter(z=>z!==parent);await save(q)}
+  toast('Link removed.');select(id,false)}
 async function deletePerson(){const s=P()[sel];if(!s)return;const nm=fullName(s);
   if(!confirm(`Delete ${nm} from the tree, including their photos and documents? This removes them from every device and can't be undone (unless you have a backup).`))return;
   for(const m of [...(s.photos||[]),...(s.docs||[]),s.video].filter(Boolean))await delMedia(m,false);
