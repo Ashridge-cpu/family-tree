@@ -143,6 +143,15 @@ function layout(){
     for(const gr of G){let x=gr.desired??(placed.length?cursor-gr.left+0.6:0); if(x+gr.left<cursor+0.6)x=cursor+0.6-gr.left; gr.x=x; cursor=x+gr.right; placed.push(gr)}
     const withD=G.filter(gr=>gr.desired!=null); const shift=withD.length?withD.reduce((s,gr)=>s+(gr.x-gr.desired),0)/withD.length:(G.length?-(G[0].x+G[0].left+cursor)/2:0);
     for(const gr of G){gr.x-=shift; for(const u of gr.units)for(const [id,o] of Object.entries(u.off))pos[id]=new THREE.Vector3(gr.x+o*SX+u.idx*STAG,-g*SY+gr.baseLift+u.idx*TIER,gr.baseZ-u.idx*SZ)}
+    // a couple from two different families (e.g. Mark with his parents, Emma with hers): if one of them is an only child here,
+    // slide them across to stand right beside their partner, at the partner's depth, so the heart joins the right two people
+    for(const gr of G){if(gr.units.length!==1||gr.key.startsWith('solo:'))continue;const u=gr.units[0];
+      const s=spousesOf(u.head).find(x=>!ended(u.head,x)&&pos[x]&&unitOf[x]&&unitOf[x]!==u&&unitOf[x].head===x);if(!s)continue;
+      const og=G.find(h=>h.units.includes(unitOf[s]));if(og.units.length===1&&u.head>s)continue;
+      const ou=unitOf[s],side=((gr.desired??gr.x)>=pos[s].x)?1:-1,reach=Math.max(0,...Object.values(ou.off).map(o=>o*side));
+      const mine=Math.max(0,...Object.values(u.off).map(o=>-o*side));
+      let tx=pos[s].x+side*(reach+1+mine)*SX;const edge=og.x+(side>0?og.right:og.left)+side*(0.7+mine)*SX;if(ou.idx>0)tx=side>0?Math.max(tx,edge):Math.min(tx,edge);const d=new THREE.Vector3(tx-pos[u.head].x,pos[s].y-pos[u.head].y,pos[s].z-pos[u.head].z);
+      for(const id in u.off)pos[id].add(d)}
   }
   return {pos,gen};
 }
@@ -458,7 +467,7 @@ function personDialog(act){
   if(act==='sibling')return dlg(`<h2>Add a brother or sister of ${esc(nm)}</h2>`+personForm({surname:s.surname}),async()=>{const c=blank();if(!readForm(c))return false;
     let par=parentsOf(s.id);if(!par.length){const ph=blank({given:'Parent of '+(s.given||nm),surname:'',unknown:true,notes:'Placeholder so brothers and sisters can be linked. Use "Add parent" on one of the children (or Edit here) to fill in the real person.'});await save(ph);par=[ph.id];const q=structuredClone(s);q.parents=[ph.id];await save(q)}
     c.parents=[...par];await save(c);select(c.id,true)});
-  if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},relFields()),async()=>{const c=blank();if(!readForm(c))return false;await save(c);await saveRel(s.id,c.id);select(c.id,true)});
+  if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},relFields()),async()=>{const c=blank();if(!readForm(c))return false;await save(c);await saveRel(s.id,c.id);await offerKids(s.id,c.id);select(c.id,true)});
   if(act==='link'){const others=Object.values(P()).filter(p=>p.id!==s.id).sort((x,y)=>fullName(x).localeCompare(fullName(y)));
     return dlg(`<h2>Link ${esc(nm)} to someone already in the tree</h2>
       <label for="lRel">${esc(nm)} is the…</label><select id="lRel"><option value="spouse">Partner / spouse of</option><option value="child">Parent of</option><option value="parent">Child of</option></select>
@@ -468,7 +477,7 @@ function personDialog(act){
       const rel=$('#lRel').value,o=$('#lWho').value;if(!o||!P()[o])return false;
       if(rel==='spouse'){
         if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
-        await saveRel(s.id,o)}
+        await saveRel(s.id,o);await offerKids(s.id,o);await offerKids(o,s.id)}
       else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
         if(cur.includes(parent))return toast('Already linked.'),false;
         const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(child);
@@ -500,6 +509,11 @@ const relFields=(r={},m='')=>`${field('rMarr','Marriage (date and place, optiona
 async function saveRel(x,y){const m=$('#rMarr').value.trim().slice(0,120),st=$('#rStat').value,end=st?$('#rEnd').value.trim().slice(0,60):'';
   for(const [u,v] of [[x,y],[y,x]]){const q=structuredClone(P()[u]);q.spouses=[...new Set([...(q.spouses||[]),v])];
     q.marr={...(q.marr||{})};if(m)q.marr[v]=m;else delete q.marr[v];q.rel={...(q.rel||{})};if(st)q.rel[v]={status:st,end};else delete q.rel[v];await save(q)}}
+// a new partner may also be the other parent of children who so far have only one parent recorded
+async function offerKids(x,y){for(const c of childrenOf(x)){const q=P()[c],cur=(q.parents||[]).filter(i=>P()[i]),ph=cur.find(i=>P()[i].unknown);
+  if(cur.includes(y)||(cur.length>=2&&!ph))continue;
+  if(!confirm('Is '+fullName(P()[y])+' also the parent of '+fullName(q)+'?\n(Choose Cancel if not, e.g. a later partner.)'))continue;
+  const r=structuredClone(q);r.parents=[...cur.filter(i=>i!==ph),y];await save(r);if(ph&&!childrenOf(ph).length)await store.del('persons',ph)}}
 function relDialog(x,y){const A=P()[x],B=P()[y];if(!A||!B)return;
   dlg(`<h2>${esc(fullName(A))} &amp; ${esc(fullName(B))}</h2>`+relFields(relOf(x,y),A.marr?.[y]||B.marr?.[x]||'')+
     `<p style="font-size:13px;color:var(--mut)">Separated or divorced couples get a faded, broken heart, and the current partner sits closest. Children keep both their parents either way.</p>`,
