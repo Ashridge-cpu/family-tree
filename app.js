@@ -84,6 +84,9 @@ function onStatus(s){const el=$('#status');if(!el)return;el.className=s;
 /* ======================= relationships ======================= */
 const parentsOf=id=>(P()[id]?.parents||[]).filter(x=>P()[x]);
 const spousesOf=id=>(P()[id]?.spouses||[]).filter(x=>P()[x]);
+const relOf=(x,y)=>P()[x]?.rel?.[y]||P()[y]?.rel?.[x]||{};
+const ended=(x,y)=>['separated','divorced'].includes(relOf(x,y).status);
+const relText=(x,y)=>{const r=relOf(x,y);return r.status?r.status+(r.end?' '+r.end:''):''};
 const childrenOf=id=>Object.values(P()).filter(p=>(p.parents||[]).includes(id)).map(p=>p.id);
 const sortKey=p=>[p.order!=null&&p.order!==''?+p.order:1e4+(yearOf(p.birth)||5000),fullName(p)];
 const bySib=(a,b)=>{const A=sortKey(P()[a]),B=sortKey(P()[b]);return A[0]-B[0]||A[1].localeCompare(B[1])};
@@ -125,10 +128,12 @@ function layout(){
       // partners of brothers/sisters further back go on the side clear of the ones in front,
       // so their heart and the line down to their children aren't hidden behind a sibling
       let frontSide=null;
-      gr.units.forEach((u,idx)=>{const male=ps[u.head].sex!=='F';
+      gr.units.forEach((u,idx)=>{const male=ps[u.head].sex!=='F';u.sp.sort((x,y)=>ended(u.head,x)-ended(u.head,y));
         u.off={};u.off[u.head]=0;u.sp.forEach((s,j)=>{let side=(j%2===0)===male?1:-1;
-          if(idx>0&&u.sp.length===1)side=frontSide===-1?1:-1;
+          if(idx>0){const away=frontSide===-1?1:-1;side=j%2===0?away:-away}
           u.off[s]=side*(Math.floor(j/2)+1)});
+        // someone further back with partners on both sides: slide the whole couple clear of the sibling in front
+        if(idx>0&&u.sp.length>1){const away=frontSide===-1?1:-1;for(const k in u.off)u.off[k]+=away*2}
         if(idx===0&&u.sp.length)frontSide=Math.sign(u.off[u.sp[0]]);
         u.idx=idx;u.min=Math.min(...Object.values(u.off))*SX+idx*STAG;u.max=Math.max(...Object.values(u.off))*SX+idx*STAG});
       gr.left=Math.min(...gr.units.map(u=>u.min))-SX/2; gr.right=Math.max(...gr.units.map(u=>u.max))+SX/2;
@@ -176,15 +181,17 @@ function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h,false);c
 const glowTex=(()=>{const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');const g=x.createRadialGradient(64,64,4,64,64,64);
   g.addColorStop(0,'rgba(255,214,140,.9)');g.addColorStop(.35,'rgba(255,190,90,.35)');g.addColorStop(1,'rgba(255,170,60,0)');x.fillStyle=g;x.fillRect(0,0,128,128);
   const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t})();
-const heartTex=(()=>{const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');x.translate(64,70);
+const mkHeart=broken=>{const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');x.translate(64,70);
   const h=()=>{x.beginPath();x.moveTo(0,30);x.bezierCurveTo(-60,-8,-28,-52,0,-22);x.bezierCurveTo(28,-52,60,-8,0,30);x.closePath()};
   x.shadowColor='rgba(255,190,80,1)';x.shadowBlur=18;x.lineWidth=7;x.strokeStyle='#ffcf6e';h();x.stroke();x.shadowBlur=0;x.lineWidth=2.5;x.strokeStyle='#fff1c4';h();x.stroke();
-  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t})();
+  if(broken){x.globalCompositeOperation='destination-out';x.lineWidth=9;x.beginPath();x.moveTo(-2,-30);x.lineTo(6,-14);x.lineTo(-6,0);x.lineTo(5,14);x.lineTo(-1,34);x.stroke()}
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t};
+const heartTex=mkHeart(false),brokenHeartTex=mkHeart(true);
 const lineMat=new THREE.MeshBasicMaterial({color:0xffc861,transparent:true,opacity:.95,fog:true});
 const lineGlowMat=new THREE.MeshBasicMaterial({color:0xffa630,transparent:true,opacity:.16,blending:THREE.AdditiveBlending,depthWrite:false});
 const cyl=new THREE.CylinderGeometry(1,1,1,8,1,true);
-function seg(a,b,group,ids){const d=new THREE.Vector3().subVectors(b,a),len=d.length();if(len<1e-3)return;
-  for(const [m,r] of [[lineMat.clone(),0.022],[lineGlowMat.clone(),0.06]]){const mesh=new THREE.Mesh(cyl,m);mesh.scale.set(r,len,r);
+function seg(a,b,group,ids,dim=1){const d=new THREE.Vector3().subVectors(b,a),len=d.length();if(len<1e-3)return;
+  for(const [m,r] of [[lineMat.clone(),0.022],[lineGlowMat.clone(),0.06]]){m.opacity*=dim;const mesh=new THREE.Mesh(cyl,m);mesh.scale.set(r,len,r);
     mesh.position.copy(a).addScaledVector(d,.5);mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),d.clone().normalize());group.add(mesh);links.push({mesh,ids,base:m.opacity})}}
 
 function loadImg(src){if(imgCache.has(src))return imgCache.get(src);const p=new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=src});imgCache.set(src,p);return p}
@@ -254,8 +261,8 @@ function rebuild(){
   for(const p of Object.values(ps)){
     for(const s of spousesOf(p.id)){const k=[p.id,s].sort().join('~');if(done.has(k)||!L.pos[s]||!L.pos[p.id])continue;done.add(k);
       const a=L.pos[p.id].clone(),b=L.pos[s].clone();a.y=b.y=a.y-0.25;const dir=new THREE.Vector3().subVectors(b,a).normalize();
-      const a2=a.clone().addScaledVector(dir,FW/2*0.9),b2=b.clone().addScaledVector(dir,-FW/2*0.9);seg(a2,b2,lg,[p.id,s]);
-      const h=new THREE.Sprite(new THREE.SpriteMaterial({map:heartTex,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));h.scale.set(.75,.75,1);h.position.copy(a2).lerp(b2,.5);lg.add(h);links.push({mesh:h,ids:[p.id,s],base:1})}
+      const a2=a.clone().addScaledVector(dir,FW/2*0.9),b2=b.clone().addScaledVector(dir,-FW/2*0.9);const ex=ended(p.id,s);seg(a2,b2,lg,[p.id,s],ex?.4:1);
+      const h=new THREE.Sprite(new THREE.SpriteMaterial({map:ex?brokenHeartTex:heartTex,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));h.scale.set(.75,.75,1);h.position.copy(a2).lerp(b2,.5);lg.add(h);links.push({mesh:h,ids:[p.id,s],base:ex?.55:1})}
   }
   const fams={};for(const p of Object.values(ps)){const par=parentsOf(p.id).filter(x=>L.pos[x]);if(!par.length||!L.pos[p.id])continue;const k=par.sort().join('+');(fams[k]=fams[k]||[]).push(p.id)}
   for(const [k,kids] of Object.entries(fams)){
@@ -394,7 +401,7 @@ function renderDetails(){
    <div class="places">${[b&&b+(p.birthPlace?', '+esc(p.birthPlace):''),d&&d+(p.deathPlace?', '+esc(p.deathPlace):'')].filter(Boolean).join('<br>')}</div>
    <div class="sec rel" style="font-size:16px;line-height:1.5">
     ${par.length?`<div><span class="gold">Parents:</span> ${relLinks(par,null,'parent')}</div>`:''}
-    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>p.marr?.[i]?` <small>(m. ${esc(p.marr[i])})</small>`:'','spouse')}</div>`:''}
+    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>{const bits=[p.marr?.[i]?'m. '+p.marr[i]:'',relText(p.id,i)].filter(Boolean);return (bits.length?` <small>(${esc(bits.join(', '))})</small>`:'')+` <button class="x" data-relset="${esc(i)}" title="Marriage, separation or divorce">✎</button>`},'spouse')}</div>`:''}
     ${sib.length?`<div><span class="gold">Brothers &amp; sisters:</span> ${relLinks(sib)}</div>`:''}
     ${kids.length?`<div><span class="gold">Children:</span> ${relLinks(kids,null,'child')}</div>`:''}
     ${!par.length&&!sp.length&&!kids.length&&!sib.length?'<div style="color:var(--mut)">No relatives linked yet.</div>':''}
@@ -410,7 +417,8 @@ function renderDetails(){
     <div style="font-size:13px;color:var(--mut)">A short silent looping video (MP4/WebM, a few seconds, max 6 MB) that plays in the frame when you're close, like the moving portraits in Harry Potter.</div></div>
    <div class="sec" style="display:flex;justify-content:space-between;gap:8px"><button class="mini" data-do="edit">Edit details</button><button class="mini danger" data-do="delete">Delete person</button></div>`;
 }
-$('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do],[data-unlink]');if(!t)return;
+$('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do],[data-unlink],[data-relset]');if(!t)return;
+  if(t.dataset.relset)return relDialog(sel,t.dataset.relset);
   if(t.dataset.unlink){const [k,...r]=t.dataset.unlink.split(':');return unlink(sel,k,r.join(':'))}
   if(t.dataset.go)return select(t.dataset.go,true); if(t.dataset.view)return openViewer(t.dataset.view);
   const a=t.dataset.do;
@@ -450,18 +458,17 @@ function personDialog(act){
   if(act==='sibling')return dlg(`<h2>Add a brother or sister of ${esc(nm)}</h2>`+personForm({surname:s.surname}),async()=>{const c=blank();if(!readForm(c))return false;
     let par=parentsOf(s.id);if(!par.length){const ph=blank({given:'Parent of '+(s.given||nm),surname:'',unknown:true,notes:'Placeholder so brothers and sisters can be linked. Use "Add parent" on one of the children (or Edit here) to fill in the real person.'});await save(ph);par=[ph.id];const q=structuredClone(s);q.parents=[ph.id];await save(q)}
     c.parents=[...par];await save(c);select(c.id,true)});
-  if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},`${field('fMarr','Marriage (date and place, optional)','','e.g. 1985, Exeter')}`),async()=>{const c=blank();if(!readForm(c))return false;
-    const m=$('#fMarr').value.trim().slice(0,120);c.spouses=[s.id];if(m)c.marr={[s.id]:m};await save(c);const q=structuredClone(s);q.spouses=[...new Set([...(q.spouses||[]),c.id])];if(m)q.marr={...(q.marr||{}),[c.id]:m};await save(q);select(c.id,true)});
+  if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},relFields()),async()=>{const c=blank();if(!readForm(c))return false;await save(c);await saveRel(s.id,c.id);select(c.id,true)});
   if(act==='link'){const others=Object.values(P()).filter(p=>p.id!==s.id).sort((x,y)=>fullName(x).localeCompare(fullName(y)));
     return dlg(`<h2>Link ${esc(nm)} to someone already in the tree</h2>
       <label for="lRel">${esc(nm)} is the…</label><select id="lRel"><option value="spouse">Partner / spouse of</option><option value="child">Parent of</option><option value="parent">Child of</option></select>
       <label for="lWho">…this person</label><select id="lWho">${others.map(p=>`<option value="${esc(p.id)}">${esc(fullName(p))}${p.birth?' ('+esc(p.birth)+')':''}</option>`).join('')}</select>
-      <div id="lMarrBox">${field('lMarr','Marriage (date and place, optional)','','e.g. 2015, Banbury')}</div>
+      <div id="lMarrBox">${relFields()}</div>
       <p style="font-size:13px;color:var(--mut)">This only joins two people who are already in the tree; nobody new is created. Use the ✕ next to a name to undo a link.</p>`,async()=>{
       const rel=$('#lRel').value,o=$('#lWho').value;if(!o||!P()[o])return false;
-      if(rel==='spouse'){const m=$('#lMarr').value.trim().slice(0,120);
+      if(rel==='spouse'){
         if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
-        for(const [x,y] of [[s.id,o],[o,s.id]]){const q=structuredClone(P()[x]);q.spouses=[...new Set([...(q.spouses||[]),y])];if(m)q.marr={...(q.marr||{}),[y]:m};await save(q)}}
+        await saveRel(s.id,o)}
       else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
         if(cur.includes(parent))return toast('Already linked.'),false;
         const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(child);
@@ -487,10 +494,20 @@ function personDialog(act){
       for(const k of [s.id,...(sibs.length&&$('#fSibs')?.checked?sibs:[])]){const q=structuredClone(P()[k]);q.parents=[...new Set([...(q.parents||[]),c.id])].slice(0,2);await save(q)}
       select(c.id,true)})}
 }
+const relFields=(r={},m='')=>`${field('rMarr','Marriage (date and place, optional)',m,'e.g. 1985, Exeter')}
+  <div class="row2"><div><label for="rStat">Relationship now</label><select id="rStat"><option value="">Together</option><option value="separated"${r.status==='separated'?' selected':''}>Separated</option><option value="divorced"${r.status==='divorced'?' selected':''}>Divorced</option></select></div>
+  <div>${field('rEnd','Separated / divorced (year or date)',r.end||'','optional')}</div></div>`;
+async function saveRel(x,y){const m=$('#rMarr').value.trim().slice(0,120),st=$('#rStat').value,end=st?$('#rEnd').value.trim().slice(0,60):'';
+  for(const [u,v] of [[x,y],[y,x]]){const q=structuredClone(P()[u]);q.spouses=[...new Set([...(q.spouses||[]),v])];
+    q.marr={...(q.marr||{})};if(m)q.marr[v]=m;else delete q.marr[v];q.rel={...(q.rel||{})};if(st)q.rel[v]={status:st,end};else delete q.rel[v];await save(q)}}
+function relDialog(x,y){const A=P()[x],B=P()[y];if(!A||!B)return;
+  dlg(`<h2>${esc(fullName(A))} &amp; ${esc(fullName(B))}</h2>`+relFields(relOf(x,y),A.marr?.[y]||B.marr?.[x]||'')+
+    `<p style="font-size:13px;color:var(--mut)">Separated or divorced couples get a faded, broken heart, and the current partner sits closest. Children keep both their parents either way.</p>`,
+    async()=>{await saveRel(x,y);toast('Saved.');select(x,false)})}
 async function unlink(id,kind,o){const A=P()[id],B=P()[o];if(!A||!B)return;
   const words={spouse:'as partners',parent:`(${fullName(B)} as parent of ${fullName(A)})`,child:`(${fullName(B)} as child of ${fullName(A)})`}[kind];
   if(!confirm(`Remove the link between ${fullName(A)} and ${fullName(B)} ${words}? Nobody is deleted.`))return;
-  if(kind==='spouse'){for(const [x,y] of [[id,o],[o,id]]){const q=structuredClone(P()[x]);q.spouses=(q.spouses||[]).filter(z=>z!==y);if(q.marr)delete q.marr[y];await save(q)}}
+  if(kind==='spouse'){for(const [x,y] of [[id,o],[o,id]]){const q=structuredClone(P()[x]);q.spouses=(q.spouses||[]).filter(z=>z!==y);if(q.marr)delete q.marr[y];if(q.rel)delete q.rel[y];await save(q)}}
   else{const child=kind==='parent'?id:o,parent=kind==='parent'?o:id;const q=structuredClone(P()[child]);q.parents=(q.parents||[]).filter(z=>z!==parent);await save(q)}
   toast('Link removed.');select(id,false)}
 async function deletePerson(){const s=P()[sel];if(!s)return;const nm=fullName(s);
@@ -528,6 +545,7 @@ function exportGedcom(){
   for(const [k,f] of fams){out.push(`0 ${F[k]} FAM`);const [a,b]=f.par.map(i=>P()[i]);
     const ord=b&&(a.sex==='F'||b.sex==='M')?[b,a]:[a,b];if(ord[0])out.push('1 HUSB '+I[ord[0].id]);if(ord[1])out.push('1 WIFE '+I[ord[1].id]);
     const m=a&&b&&(a.marr?.[b.id]||b.marr?.[a.id]);if(m){out.push('1 MARR');const dm=String(m).match(/^(.*?\d{4})\s*,?\s*(.*)$/);out.push('2 DATE '+gedDate(dm?dm[1]:m));if(dm&&dm[2])out.push('2 PLAC '+dm[2])}
+    const rs=a&&b?relOf(a.id,b.id):{};if(rs.status==='divorced'){out.push('1 DIV');if(rs.end)out.push('2 DATE '+gedDate(rs.end))}else if(rs.status==='separated'){out.push('1 _SEPR');if(rs.end)out.push('2 DATE '+gedDate(rs.end))}
     f.kids.sort(bySib).forEach(c=>out.push('1 CHIL '+I[c]))}
   out.push('0 TRLR');download(out.join('\r\n')+'\r\n','turner-pears-family-tree.ged','text/vnd.familysearch.gedcom');
 }
