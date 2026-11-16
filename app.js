@@ -120,8 +120,16 @@ function layout(){
       const par=gr.key.startsWith('solo:')?[]:gr.key.split('+');
       const kids=gr.key.startsWith('solo:')?gr.units.flatMap(u=>[u.head,...u.sp]).flatMap(childrenOf).filter(c=>pos[c]):[];
       gr.desired=par.length?par.reduce((s,p)=>s+(pos[p]?.x||0),0)/par.length:null;
+      // children sit in the same depth plane as their parents, so the drop line comes straight down from them
+      const pp=par.filter(p=>pos[p]);gr.baseZ=pp.length?pp.reduce((s,p)=>s+pos[p].z,0)/pp.length:0;gr.baseLift=pp.length?pp.reduce((s,p)=>s+pos[p].y+(g-1)*SY,0)/pp.length:0;
+      // partners of brothers/sisters further back go on the side clear of the ones in front,
+      // so their heart and the line down to their children aren't hidden behind a sibling
+      let frontSide=null;
       gr.units.forEach((u,idx)=>{const male=ps[u.head].sex!=='F';
-        u.off={};u.off[u.head]=0;u.sp.forEach((s,j)=>{const side=(j%2===0)===male?1:-1;u.off[s]=side*(Math.floor(j/2)+1)});
+        u.off={};u.off[u.head]=0;u.sp.forEach((s,j)=>{let side=(j%2===0)===male?1:-1;
+          if(idx>0&&u.sp.length===1)side=frontSide===-1?1:-1;
+          u.off[s]=side*(Math.floor(j/2)+1)});
+        if(idx===0&&u.sp.length)frontSide=Math.sign(u.off[u.sp[0]]);
         u.idx=idx;u.min=Math.min(...Object.values(u.off))*SX+idx*STAG;u.max=Math.max(...Object.values(u.off))*SX+idx*STAG});
       gr.left=Math.min(...gr.units.map(u=>u.min))-SX/2; gr.right=Math.max(...gr.units.map(u=>u.max))+SX/2;
     }
@@ -129,7 +137,7 @@ function layout(){
     let cursor=-1e9; const placed=[];
     for(const gr of G){let x=gr.desired??(placed.length?cursor-gr.left+0.6:0); if(x+gr.left<cursor+0.6)x=cursor+0.6-gr.left; gr.x=x; cursor=x+gr.right; placed.push(gr)}
     const withD=G.filter(gr=>gr.desired!=null); const shift=withD.length?withD.reduce((s,gr)=>s+(gr.x-gr.desired),0)/withD.length:(G.length?-(G[0].x+G[0].left+cursor)/2:0);
-    for(const gr of G){gr.x-=shift; for(const u of gr.units)for(const [id,o] of Object.entries(u.off))pos[id]=new THREE.Vector3(gr.x+o*SX+u.idx*STAG,-g*SY+u.idx*TIER,-u.idx*SZ)}
+    for(const gr of G){gr.x-=shift; for(const u of gr.units)for(const [id,o] of Object.entries(u.off))pos[id]=new THREE.Vector3(gr.x+o*SX+u.idx*STAG,-g*SY+gr.baseLift+u.idx*TIER,gr.baseZ-u.idx*SZ)}
   }
   return {pos,gen};
 }
