@@ -1,0 +1,85 @@
+rules_version = '2';
+// Firestore security rules for the shared free Firebase project "bungalow-supplies".
+// Covers BOTH apps: Bungalow Supplies (rooms/...) — unchanged — and the Turner & Pears Family Tree (trees/...).
+// Paste the whole of this file over the existing rules in the Firebase console and click Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function validRoom(room) {
+      return room.matches('^[a-f0-9]{64}$');
+    }
+
+    // ---------------- Bungalow Supplies (unchanged) ----------------
+    // Data lives only at rooms/{roomKey}/{collection}/{docId}; roomKey is derived from the household code.
+    function validColl(coll) {
+      return coll in ['items', 'staples', 'history', 'meals', 'config'];
+    }
+    function sensible() {
+      return request.resource.data.size() <= 20
+        && (!('name' in request.resource.data) || (request.resource.data.name is string && request.resource.data.name.size() <= 120))
+        && (!('note' in request.resource.data) || (request.resource.data.note is string && request.resource.data.note.size() <= 500))
+        && (!('ingredients' in request.resource.data) || (request.resource.data.ingredients is string && request.resource.data.ingredients.size() <= 3000));
+    }
+    match /rooms/{room}/{coll}/{docId} {
+      allow get, list: if validRoom(room) && validColl(coll);
+      allow create, update: if validRoom(room) && validColl(coll) && docId.size() <= 150 && sensible();
+      allow delete: if validRoom(room) && validColl(coll);
+    }
+
+    // ---------------- Turner & Pears Family Tree ----------------
+    // Data lives only at trees/{treeKey}/{persons|media|chunks|config}/{docId}.
+    // treeKey is a 64-character key the app derives from the family passcode (PBKDF2-SHA256, 600,000 rounds),
+    // so only devices that know the passcode can work out where the tree lives. Nobody can list the trees themselves.
+    // Photos, documents and moving portraits are stored as base64 "chunks" (each under Firestore's 1 MiB limit).
+    function treeColl(coll) {
+      return coll in ['persons', 'media', 'chunks', 'config'];
+    }
+    function treeDocOk(coll) {
+      return request.resource.data.size() <= 40
+        && (coll != 'chunks' || (request.resource.data.keys().hasOnly(['d']) && request.resource.data.d is string && request.resource.data.d.size() <= 950000))
+        && (coll != 'persons' || (!('notes' in request.resource.data) || (request.resource.data.notes is string && request.resource.data.notes.size() <= 20000)))
+        && (coll != 'media' || (!('thumb' in request.resource.data) || request.resource.data.thumb == null || (request.resource.data.thumb is string && request.resource.data.thumb.size() <= 200000)));
+    }
+    match /trees/{tree}/{coll}/{docId} {
+      allow get: if validRoom(tree) && treeColl(coll);
+      allow list: if validRoom(tree) && coll in ['persons', 'media', 'config'];
+      allow create, update: if validRoom(tree) && treeColl(coll) && docId.size() <= 150 && treeDocOk(coll);
+      allow delete: if validRoom(tree) && treeColl(coll);
+    }
+    // ---------------- Family Tree: view-only copies ----------------
+    // The owner's app publishes a read-only copy at views/{viewKey}/{persons|media|chunks|config}/{docId}.
+    // viewKey is derived from the separate viewer code (PBKDF2-SHA256, 600,000 rounds), so viewers can read it.
+    // Nobody can write there unless the SAME batched write also writes views/{viewKey}/w/proof containing a secret
+    // whose SHA-256 equals the hash fixed in views/{viewKey}/meta/m when sharing was switched on. Only the owner's
+    // devices can work out that secret (it comes from the family passcode), and w/proof can never be read.
+    function vmeta(v) { return getAfter(/databases/$(database)/documents/views/$(v)/meta/m); }
+    function vproof(v) { return getAfter(/databases/$(database)/documents/views/$(v)/w/proof); }
+    function ownerWrite(v) {
+      return vproof(v) != null && vmeta(v) != null
+        && vproof(v).data.t == request.time
+        && hashing.sha256(vproof(v).data.k).toHexString().lower() == vmeta(v).data.h;
+    }
+    match /views/{v}/meta/m {
+      allow get: if validRoom(v);
+      allow create: if validRoom(v) && request.resource.data.keys().hasOnly(['h', 'revoked', 'updatedAt'])
+        && request.resource.data.h is string && request.resource.data.h.matches('^[a-f0-9]{64}$');
+      allow update: if validRoom(v) && request.resource.data.keys().hasOnly(['h', 'revoked', 'updatedAt'])
+        && request.resource.data.h == resource.data.h && ownerWrite(v);
+      allow delete: if false;
+    }
+    match /views/{v}/w/proof {
+      allow read: if false;
+      allow create, update: if validRoom(v) && request.resource.data.keys().hasOnly(['k', 't'])
+        && request.resource.data.k is string && request.resource.data.t == request.time
+        && hashing.sha256(request.resource.data.k).toHexString().lower() == vmeta(v).data.h;
+      allow delete: if false;
+    }
+    match /views/{v}/{coll}/{docId} {
+      allow get: if validRoom(v) && treeColl(coll);
+      allow list: if validRoom(v) && coll in ['persons', 'media', 'config'];
+      allow create, update: if validRoom(v) && treeColl(coll) && docId.size() <= 150 && treeDocOk(coll) && ownerWrite(v);
+      allow delete: if validRoom(v) && treeColl(coll) && ownerWrite(v);
+    }
+    // Everything else is denied by default.
+  }
+}
