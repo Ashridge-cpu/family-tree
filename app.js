@@ -2,7 +2,8 @@
 // partners sit side by side, and brothers and sisters recede into the screen in birth order (eldest at the front).
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/OrbitControls.js';
-import {createStore,deriveRoomKey,CHUNK} from './store.js';
+import {createStore,deriveRoomKey,deriveViewKey,CHUNK} from './store.js';
+import {createPublisher,viewPerson} from './share.js';
 import {SEED,SEED_VERSION} from './seed.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -16,14 +17,19 @@ const years=p=>{const b=yearOf(p.birth),d=yearOf(p.death);if(!b&&!d)return p.dec
 const SMALL=matchMedia('(max-width:860px), (max-height:540px)').matches||matchMedia('(pointer:coarse)').matches;
 const toast=(t,ms=2600)=>{const d=document.createElement('div');d.className='toast';d.textContent=t;document.body.appendChild(d);setTimeout(()=>d.remove(),ms)};
 const params=new URLSearchParams(location.search), DEMO=params.has('demo');
-let store, sel='mark', focusMode=false, yearFilter=null;
+let store, sel='mark', focusMode=false, yearFilter=null, VIEW=false, publisher=null, pubState='off';
+const GONEMSG='This view-only link has been switched off or the code was changed. Ask for the new viewer code.';
+const ROMSG='This is a view-only copy of the family tree.';
 const P=()=>store.data.persons, M=()=>store.data.media;
 
 /* ======================= boot / lock ======================= */
 async function boot(){
   await Promise.race([Promise.all([document.fonts.load('600 30px Cinzel'),document.fonts.load('500 26px Cormorant'),document.fonts.load('italic 500 20px Cormorant')]),new Promise(r=>setTimeout(r,2500))]).catch(()=>{});
+  const wantView=params.has('view'), vk=localStorage.getItem('tpt:view'), okKey=k=>k&&/^[a-f0-9]{64}$/.test(k);
+  if(DEMO&&wantView){await startDemoView();return}
   if(DEMO){await start('demo'.padEnd(64,'0'),true);return}
   const room=localStorage.getItem('tpt:room');
+  if(wantView||(!okKey(room)&&okKey(vk))){if(okKey(vk)){await startView(vk);return}const gone=sessionStorage.getItem('tpt:viewGone');sessionStorage.removeItem('tpt:viewGone');showViewLock(gone?GONEMSG:'');return}
   if(room&&/^[a-f0-9]{64}$/.test(room)){await start(room,false);return}
   showLock();
 }
@@ -44,6 +50,10 @@ function showLock(){
       const r=await deriveRoomKey(c1); const s=await createStore(r,{onChange,onStatus});
       const ex=await s.exists();
       if(ex===true){await openRoom(r,s,false);return}
+      if(ex===false){ // maybe this is a viewer code typed on the main link
+        const v=await deriveViewKey(c1),vs=await createStore(v,{base:'views',readOnly:true,onChange,onStatus});
+        if(await vs.exists()===true){await s.wipeLocal();localStorage.setItem('tpt:view',v);history.replaceState(null,'','?view');$('#lock').style.display='none';await startView(v,vs);return}
+        await vs.wipeLocal()}
       room=r;st=s; $('#pcStep2').style.display='block'; $('#pc1').disabled=true;
       $('#pcMsg').textContent=ex===false?'This is a new family tree. Type the passcode again to confirm and start it.':
         'I can\'t check online for an existing tree yet, so this will start on this device and sync once cloud sync is switched on. Type the passcode again to confirm.';
@@ -53,6 +63,29 @@ function showLock(){
   };
   $('#pcGo').onclick=go; $('#lockBox').onkeydown=e=>{if(e.key==='Enter')go()}; $('#pc1').focus();
 }
+function showViewLock(msg){
+  const L=$('#lock');L.style.display='flex';
+  $('#lockBox').innerHTML=`<h2>Turner &amp; Pears Family Tree</h2><p>${esc(msg||'You have been given view-only access. Enter the viewer code.')}</p>
+   <input id="vc1" type="password" autocomplete="current-password" placeholder="Viewer code" style="margin-top:10px;text-align:center">
+   <div class="acts" style="justify-content:center"><button class="b" id="vcGo">Open the tree</button></div>
+   <p style="font-size:14px;margin-top:14px">You can look around, open people and see their portraits, but nothing can be changed from here.</p>`;
+  const go=async()=>{const c=$('#vc1').value;if(c.trim().length<8)return toast('Viewer codes are at least 8 characters.');
+    $('#vcGo').disabled=true;$('#vcGo').textContent='Unlocking… (a few seconds)';
+    try{const v=await deriveViewKey(c),s=await createStore(v,{base:'views',readOnly:true,onChange,onStatus});const ex=await s.exists();
+      if(ex===true){localStorage.setItem('tpt:view',v);L.style.display='none';await startView(v,s);return}
+      await s.wipeLocal();toast(ex===false?'That code doesn\'t open a shared tree. Please check it with the person who sent the link.':'Can\'t check the code right now. Are you online?',4500)}
+    catch(e){console.error(e);toast('Something went wrong. Please try again.')}
+    $('#vcGo').disabled=false;$('#vcGo').textContent='Open the tree'};
+  $('#vcGo').onclick=go;$('#lockBox').onkeydown=e=>{if(e.key==='Enter')go()};$('#vc1').focus();
+}
+async function startView(v,s){VIEW=true;document.body.classList.add('viewonly');
+  store=s||await createStore(v,{base:'views',readOnly:true,onChange,onStatus});
+  if(!Object.keys(P()).length){const ex=await store.exists();if(ex===false){localStorage.removeItem('tpt:view');await store.wipeLocal();return showViewLock(GONEMSG)}}
+  afterStart()}
+async function startDemoView(){VIEW=true;document.body.classList.add('viewonly');
+  store=await createStore('demo'.padEnd(64,'0'),{demo:true,readOnly:true,onChange,onStatus});
+  for(const p of SEED)await store.put('persons',p.id,viewPerson(structuredClone(p),true,{}),{keepTime:true,local:true});
+  await store.put('config','main',{seeded:SEED_VERSION,created:Date.now(),updatedAt:1},{keepTime:true,local:true});afterStart()}
 async function openRoom(room,s,isNew){
   localStorage.setItem('tpt:room',room); $('#lock').style.display='none';
   store=s; if(isNew)await seedIfNeeded(); afterStart();
@@ -69,15 +102,17 @@ async function seedIfNeeded(){
 }
 function afterStart(){
   if(!P()[sel])sel=Object.keys(P())[0]||null;
+  if(!VIEW){publisher=createPublisher(store,{onState:s=>{pubState=s;const e=$('#scState');if(e)e.textContent=pubText()}});publisher.kick()}
   initScene(); rebuild(); renderList(); renderDetails(); onStatus(store.status);
   setTimeout(()=>flyHome(true),0);
 }
 
 /* ======================= data change hooks ======================= */
 let rbT=null;
-function onChange(c){ if(!scene)return; clearTimeout(rbT); rbT=setTimeout(()=>{if(sel&&!P()[sel])sel=P().mark?'mark':Object.keys(P())[0]||null;rebuild();renderList();renderDetails()},80) }
+function onChange(c){ publisher?.kick(); if(!scene)return;
+  if(VIEW&&!Object.keys(P()).length&&store.status==='synced'){localStorage.removeItem('tpt:view');sessionStorage.setItem('tpt:viewGone','1');return location.reload()} clearTimeout(rbT); rbT=setTimeout(()=>{if(sel&&!P()[sel])sel=P().mark?'mark':Object.keys(P())[0]||null;rebuild();renderList();renderDetails()},80) }
 function onStatus(s){const el=$('#status');if(!el)return;el.className=s;
-  el.textContent={local:DEMO?'Demo – nothing is saved to the cloud':'Saved on this device',offline:'Offline – saved on this device',syncing:'Syncing…',synced:'Synced',
+  el.textContent=(VIEW?'View only · ':'')+{local:DEMO?'Demo – nothing is saved to the cloud':'Saved on this device',offline:'Offline – saved on this device',syncing:'Syncing…',synced:'Synced',
     blocked:'Saved on this device – cloud sync not switched on yet'}[s]||s;
   el.title=s==='blocked'?'The Firebase rules for the family tree have not been published yet. Everything is kept safely on this device and uploads automatically once they are.':''}
 
@@ -348,7 +383,7 @@ async function compress(file,maxPx,target){
   const th=await enc(SMALL?360:480,.72);const thumb=th.c.toDataURL('image/jpeg',.72);
   return {blob:out.blob,w:out.c.width,h:out.c.height,thumb};
 }
-async function addMedia(pid,file,kind){
+async function addMedia(pid,file,kind){if(VIEW)return toast(ROMSG);
   const p=P()[pid];if(!p)return;const isImg=/^image\//.test(file.type),isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name),isVid=/^video\/(mp4|webm|quicktime)/.test(file.type);
   let blob,w=0,h=0,thumb=null,mime=file.type;
   if(kind==='video'){if(!isVid)return toast('Please choose a short MP4 or WebM video.');if(file.size>6e6)return toast('That video is over 6 MB. Please use a short loop of a few seconds.');blob=file}
@@ -366,19 +401,19 @@ async function addMedia(pid,file,kind){
   else{if(q.video)await delMedia(q.video,false);q.video=mid}
   await store.put('persons',pid,q);toast('Added '+(kind==='doc'?'document':kind==='video'?'moving portrait':'photo')+'.');
 }
-async function delMedia(mid,save=true){const m=M()[mid];if(!m)return;for(let i=0;i<m.n;i++)await store.delChunk(mid+'_'+i);await store.del('media',mid);
+async function delMedia(mid,save=true){if(VIEW)return toast(ROMSG);const m=M()[mid];if(!m)return;for(let i=0;i<m.n;i++)await store.delChunk(mid+'_'+i);await store.del('media',mid);
   if(urlCache.has(mid)){URL.revokeObjectURL(urlCache.get(mid));urlCache.delete(mid)}
   const p=P()[m.person];if(save&&p){const q=structuredClone(p);q.photos=(q.photos||[]).filter(x=>x!==mid);q.docs=(q.docs||[]).filter(x=>x!==mid);if(q.video===mid)q.video=null;if(q.portrait===mid)q.portrait=q.photos[0]||null;await store.put('persons',p.id,q)}}
 function pickFile(accept,cb){const f=$('#fileIn');f.value='';f.accept=accept;f.multiple=accept.startsWith('image')||accept.includes('pdf');f.onchange=async()=>{for(const x of f.files){try{await cb(x)}catch(e){console.error(e);toast('Couldn\'t add '+x.name)}}};f.click()}
 async function openViewer(mid){
   const m=M()[mid];if(!m)return;const V=$('#viewer');V.classList.add('open');$('#vtitle').textContent=m.title||m.name;$('#vbody').innerHTML='<p style="color:#aaa">Loading…</p>';
   const p=P()[m.person];
-  $('#vacts').innerHTML=(m.kind==='photo'&&p&&p.portrait!==mid?'<button class="mini" id="vPort">Use as portrait</button> ':'')+(m.kind==='doc'?'<button class="mini" id="vRen">Rename</button> ':'')+
+  $('#vacts').innerHTML=VIEW?'<a class="mini" id="vDl" style="text-decoration:none">Download</a> <button class="mini" id="vX">Close ✕</button>':(m.kind==='photo'&&p&&p.portrait!==mid?'<button class="mini" id="vPort">Use as portrait</button> ':'')+(m.kind==='doc'?'<button class="mini" id="vRen">Rename</button> ':'')+
     '<a class="mini" id="vDl" style="text-decoration:none">Download</a> <button class="mini danger" id="vDel">Delete</button> <button class="mini" id="vX">Close ✕</button>';
   $('#vX').onclick=()=>{V.classList.remove('open');$('#vbody').innerHTML=''};
   if($('#vPort'))$('#vPort').onclick=async()=>{const q=structuredClone(P()[m.person]);q.portrait=mid;await store.put('persons',q.id,q);$('#vPort').remove();toast('Portrait updated.')};
   if($('#vRen'))$('#vRen').onclick=async()=>{const t=prompt('Document title',m.title||m.name);if(t){const q=structuredClone(m);q.title=t.slice(0,80);await store.put('media',mid,q);$('#vtitle').textContent=q.title}};
-  $('#vDel').onclick=async()=>{if(!confirm('Delete "'+(m.title||m.name)+'"? This removes it from every device.'))return;$('#vX').click();await delMedia(mid)};
+  if($('#vDel'))$('#vDel').onclick=async()=>{if(!confirm('Delete "'+(m.title||m.name)+'"? This removes it from every device.'))return;$('#vX').click();await delMedia(mid)};
   const url=await mediaURL(mid);if(!url){$('#vbody').innerHTML='<p style="color:#aaa">Not available yet.</p>';return}
   $('#vDl').href=url;$('#vDl').download=m.name||'file';
   if(m.mime==='application/pdf')$('#vbody').innerHTML=`<iframe src="${url}#view=FitH" title="PDF"></iframe>`+(SMALL?`<p style="position:absolute;bottom:20px;color:#fff">If the PDF doesn't show, tap Download.</p>`:'');
@@ -399,7 +434,11 @@ function renderList(){
 }
 $('#search').addEventListener('input',renderList);
 $('#list').addEventListener('click',e=>{const li=e.target.closest('.li');if(li){select(li.dataset.id,true);if(SMALL)$('#left').classList.remove('show')}});
-function relLinks(ids,extra,kind){return ids.map(i=>`<a data-go="${esc(i)}">${esc(nick(P()[i])||fullName(P()[i]))}</a>${extra?extra(i):''}${kind?` <button class="x" data-unlink="${kind}:${esc(i)}" title="Remove this link (nobody is deleted)">✕</button>`:''}`).join(', ')}
+function relLinks(ids,extra,kind){return ids.map(i=>`<a data-go="${esc(i)}">${esc(nick(P()[i])||fullName(P()[i]))}</a>${extra?extra(i):''}${kind&&!VIEW?` <button class="x" data-unlink="${kind}:${esc(i)}" title="Remove this link (nobody is deleted)">✕</button>`:''}`).join(', ')}
+// viewers only ever receive the main portrait and the moving portrait (never the gallery or documents)
+function viewPortraitHTML(p){const m=p.portrait&&M()[p.portrait],v=p.video&&M()[p.video];if(!m&&!v)return'';
+  return `<div class="sec"><h3>Portrait</h3><div class="grid">${m?`<div class="th" data-view="${esc(p.portrait)}" style="background-image:url('${m.thumb}')"></div>`:''}</div>
+   ${v?`<div style="margin-top:6px"><button class="mini" data-view="${esc(p.video)}">▶ Moving portrait</button></div>`:''}</div>`}
 function renderDetails(){
   const p=P()[sel],D=$('#details');if(!p){D.innerHTML='<p style="color:var(--mut)">Select someone in the tree.</p>';return}
   const b=p.birth?`b. ${esc(p.birth)}`:'',d=p.death?`d. ${esc(p.death)}`:(p.deceased?'Deceased':'');
@@ -410,27 +449,27 @@ function renderDetails(){
    <div class="places">${[b&&b+(p.birthPlace?', '+esc(p.birthPlace):''),d&&d+(p.deathPlace?', '+esc(p.deathPlace):'')].filter(Boolean).join('<br>')}</div>
    <div class="sec rel" style="font-size:16px;line-height:1.5">
     ${par.length?`<div><span class="gold">Parents:</span> ${relLinks(par,null,'parent')}</div>`:''}
-    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>{const bits=[p.marr?.[i]?'m. '+p.marr[i]:'',relText(p.id,i)].filter(Boolean);return (bits.length?` <small>(${esc(bits.join(', '))})</small>`:'')+` <button class="x" data-relset="${esc(i)}" title="Marriage, separation or divorce">✎</button>`},'spouse')}</div>`:''}
+    ${sp.length?`<div><span class="gold">${sp.length>1?'Partners':'Partner'}:</span> ${relLinks(sp,i=>{const bits=[p.marr?.[i]?'m. '+p.marr[i]:'',relText(p.id,i)].filter(Boolean);return (bits.length?` <small>(${esc(bits.join(', '))})</small>`:'')+(VIEW?'':` <button class="x" data-relset="${esc(i)}" title="Marriage, separation or divorce">✎</button>`)},'spouse')}</div>`:''}
     ${sib.length?`<div><span class="gold">Brothers &amp; sisters:</span> ${relLinks(sib)}</div>`:''}
     ${kids.length?`<div><span class="gold">Children:</span> ${relLinks(kids,null,'child')}</div>`:''}
     ${!par.length&&!sp.length&&!kids.length&&!sib.length?'<div style="color:var(--mut)">No relatives linked yet.</div>':''}
-    <div style="margin-top:6px"><button class="mini" data-do="link">🔗 Link to someone already in the tree</button></div>
+    ${VIEW?'':'<div style="margin-top:6px"><button class="mini" data-do="link">🔗 Link to someone already in the tree</button></div>'}
    </div>
-   <div class="sec"><h3>Notes <button class="mini" data-do="edit">Edit</button></h3><div class="notes">${esc(p.notes)||'<span style="color:var(--mut)">No notes yet.</span>'}</div></div>
-   <div class="sec"><h3>Gallery <button class="mini" data-do="addphoto">+ Add photos</button></h3>
+   <div class="sec"><h3>Notes ${VIEW?'':'<button class="mini" data-do="edit">Edit</button>'}</h3><div class="notes">${esc(p.notes)||'<span style="color:var(--mut)">No notes yet.</span>'}</div></div>
+   ${VIEW?viewPortraitHTML(p):`<div class="sec"><h3>Gallery <button class="mini" data-do="addphoto">+ Add photos</button></h3>
     <div class="grid">${photos.map(x=>`<div class="th" data-view="${x}" style="background-image:url('${M()[x].thumb}')">${p.portrait===x?'<span class="star" title="Portrait">★</span>':''}</div>`).join('')||'<span style="color:var(--mut);grid-column:1/-1">No photos yet.</span>'}</div></div>
    <div class="sec"><h3>Documents <button class="mini" data-do="adddoc">+ Add</button></h3>
     <div style="font-size:13px;color:var(--mut);margin:-2px 0 6px">CV, certificates, licences… scans/photos or PDFs (up to 5 MB).</div>
     <div class="grid">${docs.map(x=>{const m=M()[x];return m.thumb?`<div class="th" data-view="${x}" title="${esc(m.title)}" style="background-image:url('${m.thumb}')"></div>`:`<div class="th doc" data-view="${x}" title="${esc(m.title)}"><i>PDF</i>${esc((m.title||'').slice(0,40))}</div>`}).join('')||'<span style="color:var(--mut);grid-column:1/-1">No documents yet.</span>'}</div></div>
    <div class="sec"><h3>Moving portrait <span>${p.video&&M()[p.video]?`<button class="mini" data-view="${p.video}">View</button> <button class="mini danger" data-do="delvid">Remove</button>`:`<button class="mini" data-do="addvid">+ Add</button>`}</span></h3>
     <div style="font-size:13px;color:var(--mut)">A short silent looping video (MP4/WebM, a few seconds, max 6 MB) that plays in the frame when you're close, like the moving portraits in Harry Potter.</div></div>
-   <div class="sec" style="display:flex;justify-content:space-between;gap:8px"><button class="mini" data-do="edit">Edit details</button><button class="mini danger" data-do="delete">Delete person</button></div>`;
+   <div class="sec" style="display:flex;justify-content:space-between;gap:8px"><button class="mini" data-do="edit">Edit details</button><button class="mini danger" data-do="delete">Delete person</button></div>`}`;
 }
 $('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do],[data-unlink],[data-relset]');if(!t)return;
   if(t.dataset.relset)return relDialog(sel,t.dataset.relset);
   if(t.dataset.unlink){const [k,...r]=t.dataset.unlink.split(':');return unlink(sel,k,r.join(':'))}
   if(t.dataset.go)return select(t.dataset.go,true); if(t.dataset.view)return openViewer(t.dataset.view);
-  const a=t.dataset.do;
+  const a=t.dataset.do;if(VIEW)return toast(ROMSG);
   if(a==='edit')personDialog('edit');else if(a==='link')personDialog('link');else if(a==='delete')deletePerson();
   else if(a==='addphoto')pickFile('image/*',f=>addMedia(sel,f,'photo'));
   else if(a==='adddoc')pickFile('image/*,application/pdf,.pdf',f=>addMedia(sel,f,'doc'));
@@ -456,8 +495,8 @@ function readForm(p){p.given=$('#fGiven').value.trim().slice(0,120);p.surname=$(
   p.death=$('#fDeath').value.trim().slice(0,60);p.deathPlace=$('#fDeathPl').value.trim().slice(0,120);p.deceased=$('#fDec').checked||!!p.death;p.notes=$('#fNotes').value.slice(0,20000);
   if(!p.given&&!p.surname){toast('Please give at least a first name or surname.');return false}delete p.unknown;return true}
 const blank=o=>({id:uid('p'),given:'',surname:'',sex:'U',birth:'',birthPlace:'',death:'',deathPlace:'',deceased:false,notes:'',parents:[],spouses:[],marr:{},order:null,photos:[],docs:[],portrait:null,video:null,...o});
-async function save(p){await store.put('persons',p.id,p)}
-function personDialog(act){
+async function save(p){if(VIEW)return toast(ROMSG);await store.put('persons',p.id,p)}
+function personDialog(act){if(VIEW)return toast(ROMSG);
   const s=P()[sel]; if(!s&&act!=='first')return toast('Select someone first.');
   const nm=s?(nick(s)||fullName(s)):'';
   if(act==='edit')return dlg(`<h2>Edit ${esc(s.unknown?'unknown parent':nm)}</h2>`+personForm(s),async()=>{const q=structuredClone(s);if(!readForm(q))return false;await save(q)});
@@ -506,30 +545,30 @@ function personDialog(act){
 const relFields=(r={},m='')=>`${field('rMarr','Marriage (date and place, optional)',m,'e.g. 1985, Exeter')}
   <div class="row2"><div><label for="rStat">Relationship now</label><select id="rStat"><option value="">Together</option><option value="separated"${r.status==='separated'?' selected':''}>Separated</option><option value="divorced"${r.status==='divorced'?' selected':''}>Divorced</option></select></div>
   <div>${field('rEnd','Separated / divorced (year or date)',r.end||'','optional')}</div></div>`;
-async function saveRel(x,y){const m=$('#rMarr').value.trim().slice(0,120),st=$('#rStat').value,end=st?$('#rEnd').value.trim().slice(0,60):'';
+async function saveRel(x,y){if(VIEW)return toast(ROMSG);const m=$('#rMarr').value.trim().slice(0,120),st=$('#rStat').value,end=st?$('#rEnd').value.trim().slice(0,60):'';
   for(const [u,v] of [[x,y],[y,x]]){const q=structuredClone(P()[u]);q.spouses=[...new Set([...(q.spouses||[]),v])];
     q.marr={...(q.marr||{})};if(m)q.marr[v]=m;else delete q.marr[v];q.rel={...(q.rel||{})};if(st)q.rel[v]={status:st,end};else delete q.rel[v];await save(q)}}
 // a new partner may also be the other parent of children who so far have only one parent recorded
-async function offerKids(x,y){for(const c of childrenOf(x)){const q=P()[c],cur=(q.parents||[]).filter(i=>P()[i]),ph=cur.find(i=>P()[i].unknown);
+async function offerKids(x,y){if(VIEW)return toast(ROMSG);for(const c of childrenOf(x)){const q=P()[c],cur=(q.parents||[]).filter(i=>P()[i]),ph=cur.find(i=>P()[i].unknown);
   if(cur.includes(y)||(cur.length>=2&&!ph))continue;
   if(!confirm('Is '+fullName(P()[y])+' also the parent of '+fullName(q)+'?\n(Choose Cancel if not, e.g. a later partner.)'))continue;
   const r=structuredClone(q);r.parents=[...cur.filter(i=>i!==ph),y];await save(r);if(ph&&!childrenOf(ph).length)await store.del('persons',ph)}}
-function relDialog(x,y){const A=P()[x],B=P()[y];if(!A||!B)return;
+function relDialog(x,y){if(VIEW)return toast(ROMSG);const A=P()[x],B=P()[y];if(!A||!B)return;
   dlg(`<h2>${esc(fullName(A))} &amp; ${esc(fullName(B))}</h2>`+relFields(relOf(x,y),A.marr?.[y]||B.marr?.[x]||'')+
     `<p style="font-size:13px;color:var(--mut)">Separated or divorced couples get a faded, broken heart, and the current partner sits closest. Children keep both their parents either way.</p>`,
     async()=>{await saveRel(x,y);toast('Saved.');select(x,false)})}
-async function unlink(id,kind,o){const A=P()[id],B=P()[o];if(!A||!B)return;
+async function unlink(id,kind,o){if(VIEW)return toast(ROMSG);const A=P()[id],B=P()[o];if(!A||!B)return;
   const words={spouse:'as partners',parent:`(${fullName(B)} as parent of ${fullName(A)})`,child:`(${fullName(B)} as child of ${fullName(A)})`}[kind];
   if(!confirm(`Remove the link between ${fullName(A)} and ${fullName(B)} ${words}? Nobody is deleted.`))return;
   if(kind==='spouse'){for(const [x,y] of [[id,o],[o,id]]){const q=structuredClone(P()[x]);q.spouses=(q.spouses||[]).filter(z=>z!==y);if(q.marr)delete q.marr[y];if(q.rel)delete q.rel[y];await save(q)}}
   else{const child=kind==='parent'?id:o,parent=kind==='parent'?o:id;const q=structuredClone(P()[child]);q.parents=(q.parents||[]).filter(z=>z!==parent);await save(q)}
   toast('Link removed.');select(id,false)}
-async function deletePerson(){const s=P()[sel];if(!s)return;const nm=fullName(s);
+async function deletePerson(){if(VIEW)return toast(ROMSG);const s=P()[sel];if(!s)return;const nm=fullName(s);
   if(!confirm(`Delete ${nm} from the tree, including their photos and documents? This removes them from every device and can't be undone (unless you have a backup).`))return;
   for(const m of [...(s.photos||[]),...(s.docs||[]),s.video].filter(Boolean))await delMedia(m,false);
   for(const p of Object.values(P())){if(p.id===s.id)continue;if((p.parents||[]).includes(s.id)||(p.spouses||[]).includes(s.id)){const q=structuredClone(p);q.parents=(q.parents||[]).filter(x=>x!==s.id);q.spouses=(q.spouses||[]).filter(x=>x!==s.id);if(q.marr)delete q.marr[s.id];await save(q)}}
   const next=spousesOf(s.id)[0]||parentsOf(s.id)[0]||childrenOf(s.id)[0]||'mark';await store.del('persons',s.id);sel=P()[next]?next:Object.keys(P())[0];toast(nm+' deleted.')}
-$('#btns').addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)return;const a=b.dataset.act;
+$('#btns').addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)return;const a=b.dataset.act;if(VIEW&&!['home','focus'].includes(a))return toast(ROMSG);
   if(a==='home')return flyHome(); if(a==='focus'){focusMode=!focusMode;b.classList.toggle('on',focusMode);applyVisibility();if(focusMode)toast('Showing '+(nick(P()[sel])||fullName(P()[sel]))+'\'s direct line. Tap again to show everyone.');return}
   personDialog(a)});
 $('#year').addEventListener('input',e=>{const v=+e.target.value;yearFilter=v>2026?null:v;$('#yearLbl').textContent=yearFilter?'Alive in '+v:'All years';applyVisibility()});
@@ -579,39 +618,127 @@ function parseGedcom(txt){
     p.notes=subs(r,'NOTE').map(n=>n.val.startsWith('@')?(recs[n.val]?.val||''):n.val).filter(Boolean).join('\n').slice(0,20000);
     const occ=sub(r,'OCCU')?.val;if(occ)p.notes=(occ+'\n'+p.notes).trim();
     if(p.given==='Unknown'&&!p.surname)p.unknown=true;
-    people[p.id]=p;map[r.id]=p.id}
+    p._ged=r.id;p._alt=subs(r,'NAME').map(n=>n.val.replace(/\/.*$/,'').trim()).filter(Boolean);people[p.id]=p;map[r.id]=p.id}
   for(const f of Object.values(recs).filter(r=>r.tag==='FAM')){const h=map[sub(f,'HUSB')?.val],w=map[sub(f,'WIFE')?.val];const par=[h,w].filter(Boolean);
-    if(h&&w){people[h].spouses.push(w);people[w].spouses.push(h);const M=sub(f,'MARR');if(M){const t=[fromGedDate(sub(M,'DATE')?.val),sub(M,'PLAC')?.val].filter(Boolean).join(', ');if(t){people[h].marr[w]=t;people[w].marr[h]=t}}}
+    if(h&&w){people[h].spouses.push(w);people[w].spouses.push(h);const M=sub(f,'MARR');if(M){const t=[fromGedDate(sub(M,'DATE')?.val),sub(M,'PLAC')?.val].filter(Boolean).join(', ');if(t){people[h].marr[w]=t;people[w].marr[h]=t}}
+      const DV=sub(f,'DIV')||sub(f,'ANUL'),SP=sub(f,'_SEPR')||sub(f,'_SEP')||sub(f,'SEPR');
+      if(DV&&DV.val!=='N'||SP){const st=DV&&DV.val!=='N'?'divorced':'separated',end=fromGedDate(sub(DV&&DV.val!=='N'?DV:SP,'DATE')?.val||'');
+        people[h].rel={...(people[h].rel||{}),[w]:{status:st,end}};people[w].rel={...(people[w].rel||{}),[h]:{status:st,end}}}}
     subs(f,'CHIL').forEach(c=>{const id=map[c.val];if(id)people[id].parents=[...new Set([...people[id].parents,...par])].slice(0,2)})}
   return Object.values(people);
 }
-async function importGedcom(file){const people=parseGedcom(await file.text());if(!people.length)return toast('No people found in that GEDCOM file.');
-  if(!confirm(`Add ${people.length} people from "${file.name}" to the tree? They are added alongside the existing people (nothing is replaced), so you may need to tidy up any duplicates.`))return;
-  for(const p of people)await save(p);toast(`Added ${people.length} people.`)}
+// GEDCOM import (owner only): preview counts and likely duplicates, then merge into the existing tree.
+const normN=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/".*?"/g,' ').replace(/[^a-z ]/g,' ').trim();
+const firstN=p=>normN(p.given).replace(/^(vice admiral sir|lt col|sir|rev|dr|mr|mrs|miss|ms)\s+/,'').split(/\s+/)[0]||'';
+function findDups(imp){const ex=Object.values(P()).filter(p=>!p.unknown);const out={};
+  // first names match exactly, via another NAME line in the file, or as a short form (Tim / Timothy)
+  const same=(a,b)=>a===b||(a.length>=3&&b.length>=3&&(a.startsWith(b)||b.startsWith(a)));
+  for(const q of imp){if(q.unknown)continue;const fs=[...new Set([firstN(q),...(q._alt||[]).map(g=>firstN({given:g}))].filter(Boolean))],sn=normN(q.surname),y=yearOf(q.birth);if(!fs.length||!sn)continue;
+    const c=ex.filter(p=>fs.some(f=>same(firstN(p),f))&&normN(p.surname)===sn).map(p=>({p,yb:yearOf(p.birth)})).filter(o=>!y||!o.yb||Math.abs(o.yb-y)<=1)
+      .sort((a,b)=>(a.yb&&y?0:1)-(b.yb&&y?0:1));
+    if(c.length)out[q.id]={match:c[0].p.id,exact:!!(c[0].yb&&y),others:c.length-1}}
+  return out}
+async function importGedcom(file){if(VIEW)return toast(ROMSG);
+  const people=parseGedcom(await file.text());if(!people.length)return toast('No people found in that GEDCOM file.');
+  const fams=new Set();people.forEach(p=>{if(p.parents.length)fams.add([...p.parents].sort().join('+'));p.spouses.forEach(s=>fams.add([p.id,s].sort().join('+')))});
+  const dups=findDups(people),dn=Object.keys(dups).length;
+  const row=q=>{const d=dups[q.id],e=P()[d.match];return `<tr><td>${esc(fullName(q))}${q.birth?' <small>b. '+esc(q.birth)+'</small>':''}</td><td>${esc(fullName(e))}${e.birth?' <small>b. '+esc(e.birth)+'</small>':' <small>(no birth date)</small>'}</td>
+    <td><select data-dup="${esc(q.id)}"><option value="link"${d.exact||!yearOf(q.birth)||!yearOf(e.birth)?' selected':''}>Same person – link</option><option value="skip">Skip</option><option value="add">Different – add new</option></select></td></tr>`};
+  dlg(`<h2>Import "${esc(file.name)}"</h2>
+    <p>Found <b>${people.length}</b> people and <b>${fams.size}</b> families. <b>${dn}</b> look like people already in the tree (same name and birth year).</p>
+    ${dn?`<div style="max-height:40vh;overflow:auto"><table style="width:100%;font-size:14px;border-collapse:collapse"><tr><th align="left">In the file</th><th align="left">Already in the tree</th><th></th></tr>${people.filter(q=>dups[q.id]).map(row).join('')}</table></div>
+     <p style="font-size:13px;color:var(--mut)">"Link" keeps the existing person (their photos, notes and links stay as they are), fills in any blank dates or places, and joins them to their relatives from the file. "Skip" leaves them and their links out.</p>`:''}
+    <p style="font-size:13px;color:var(--mut)">Nothing already in the tree is deleted or overwritten. No photos are imported. Tip: download a backup first (More → Download full backup).</p>`,
+    async()=>{const choice={};$$('[data-dup]').forEach(s=>choice[s.dataset.dup]=s.value);const r=await mergeGedcom(people,dups,choice);
+      toast(`Imported: ${r.added} added, ${r.linked} linked to existing people${r.skipped?`, ${r.skipped} skipped`:''}${r.conflicts?`. ${r.conflicts} parent link(s) left out because that person already has two parents`:''}.`,6000)},{saveLabel:'Import'});
+}
+async function mergeGedcom(people,dups,choice){
+  const idmap={},out={},stat={added:0,linked:0,skipped:0,conflicts:0};
+  const get=id=>out[id]||(out[id]=structuredClone(P()[id]));
+  for(const q of people){const c=dups[q.id]?(choice[q.id]||'link'):'add';
+    if(c==='skip'){idmap[q.id]=null;stat.skipped++}
+    else if(c==='link'){const e=dups[q.id].match;idmap[q.id]=e;stat.linked++;const t=get(e);
+      for(const f of ['birth','birthPlace','death','deathPlace'])if(!t[f]&&q[f])t[f]=q[f];if((!t.sex||t.sex==='U')&&q.sex&&q.sex!=='U')t.sex=q.sex;if(q.deceased)t.deceased=true;
+      if(q.notes&&!t.notes)t.notes=q.notes}
+    else{idmap[q.id]=q.id;stat.added++;const n=blank({given:q.given,surname:q.surname,sex:q.sex,birth:q.birth,birthPlace:q.birthPlace,death:q.death,deathPlace:q.deathPlace,deceased:q.deceased,notes:q.notes,unknown:q.unknown});n.id=q.id;delete n.unknown;if(q.unknown)n.unknown=true;out[n.id]=n}}
+  const map=x=>idmap[x];
+  for(const q of people){const me=map(q.id);if(!me)continue;const t=get(me);
+    // parents: keep existing ones, add missing ones (max two; a placeholder "unknown" parent is replaced)
+    for(const gp of q.parents.map(map).filter(Boolean)){const cur=(t.parents||[]).filter(i=>out[i]||P()[i]);if(cur.includes(gp)||gp===me)continue;
+      const ph=cur.find(i=>(out[i]||P()[i]).unknown);if(cur.length<2)t.parents=[...cur,gp];else if(ph)t.parents=[...cur.filter(i=>i!==ph),gp];else stat.conflicts++}
+    for(const gs of q.spouses){const sp=map(gs);if(!sp||sp===me)continue;t.spouses=[...new Set([...(t.spouses||[]),sp])];
+      if(q.marr?.[gs]&&!t.marr?.[sp])t.marr={...(t.marr||{}),[sp]:q.marr[gs]};
+      if(q.rel?.[gs]&&!t.rel?.[sp])t.rel={...(t.rel||{}),[sp]:q.rel[gs]}}}
+  for(const t of Object.values(out)){delete t._ged;delete t._alt;if(JSON.stringify(t)!==JSON.stringify(P()[t.id]))await store.put('persons',t.id,t)}
+  return stat}
 async function exportJSON(){toast('Gathering photos and documents…');const chunks={};for(const m of Object.values(M()))for(let i=0;i<m.n;i++){const c=await store.getChunk(m.id+'_'+i);if(c!=null)chunks[m.id+'_'+i]=c}
   download(JSON.stringify({app:'turner-pears-tree',v:1,saved:new Date().toISOString(),persons:P(),media:M(),chunks}),'turner-pears-backup-'+new Date().toISOString().slice(0,10)+'.json','application/json')}
-async function importJSON(file){let j;try{j=JSON.parse(await file.text())}catch(e){return toast('That isn\'t a valid backup file.')}
+async function importJSON(file){if(VIEW)return toast(ROMSG);let j;try{j=JSON.parse(await file.text())}catch(e){return toast('That isn\'t a valid backup file.')}
   if(j.app!=='turner-pears-tree')return toast('That isn\'t a Turner & Pears backup file.');
   if(!confirm(`Replace the whole tree with this backup from ${j.saved?.slice(0,10)||'an unknown date'} (${Object.keys(j.persons||{}).length} people)? The current tree is replaced on every device.`))return;
   for(const m of Object.values(M()))await delMedia(m.id,false);for(const id of Object.keys(P()))await store.del('persons',id);
   for(const [k,v] of Object.entries(j.chunks||{}))await store.putChunk(k,v);for(const m of Object.values(j.media||{}))await store.put('media',m.id,m,{keepTime:true});
   for(const p of Object.values(j.persons||{}))await store.put('persons',p.id,p);toast('Backup restored.')}
 function download(data,name,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000)}
+
+/* ======================= view-only sharing (owner) ======================= */
+const pubText=()=>({off:'Not shared',demo:'Demo mode – nothing is published',offline:'Waiting for a connection',publishing:'Updating the view-only copy…',published:'Up to date – your edits copy across automatically',
+    blocked:'Waiting for the new Firebase rules to be published – nothing is shared yet',error:'Couldn\'t update the view-only copy just now – it will retry',taken:'That viewer code can\'t be used – please choose another'}[pubState]||pubState);
+const shareLink=()=>new URL('./?view',location.href.split('?')[0].replace(/index\.html$/,'')).href;
+function shareDialog(mode){
+  const sh=store.data.config.share,on=!!(sh&&sh.on&&sh.viewKey),portraits=sh?sh.portraits!==false:true;
+  const stTxt=pubText();
+  void {off:'Not shared',demo:'Demo mode – nothing is published',offline:'Waiting for a connection',publishing:'Updating the view-only copy…',published:'Up to date – your edits copy across automatically',
+    blocked:'Waiting for the new Firebase rules to be published (see SETUP-FIREBASE.md) – nothing is shared yet',error:'Couldn\'t update the view-only copy just now – it will retry',taken:'That viewer code can\'t be used – please choose another'}[pubState]||pubState;
+  const codeForm=`<label for="sc1">${on?'New viewer code':'Viewer code'} (at least 8 characters, different from the family passcode)</label><input id="sc1" type="password" autocomplete="new-password">
+    <label for="sc2">Type it again</label><input id="sc2" type="password" autocomplete="new-password">`;
+  const portraitBox=`<label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="scPort"${portraits?' checked':''} style="width:auto"> Show portrait photos to viewers (main portrait and moving portrait only)</label>`;
+  const intro=`<p style="font-size:15px">Family members open the link, type the viewer code once, and can turn the tree, open people and read their details${portraits?' and see portraits':''}. They can't add, edit, link, delete or upload anything, and gallery photos and documents are never shared with them.</p>`;
+  if(!on||mode==='change'){
+    dlg(`<div id="shBox"><h2>${on?'Change the viewer code':'Share view-only'}</h2>${intro}${codeForm}${on?'':portraitBox}
+      <p style="font-size:13px;color:var(--mut)">${on?'Anyone using the old code loses access straight away and needs the new one.':'You choose the code here; it is never stored or sent anywhere.'}</p></div>`,async()=>{
+      const c=$('#sc1').value;if(c.trim().length<8){toast('Please use at least 8 characters.');return false}
+      if(c!==$('#sc2').value){toast('Those two don\'t match.');return false}
+      $('#dSave').disabled=true;$('#dSave').textContent='Working… (a few seconds)';
+      try{
+        if(!DEMO&&await deriveRoomKey(c)===store.room){toast('That is the family passcode. Please choose a different viewer code.',4000);$('#dSave').disabled=false;$('#dSave').textContent='Save';return false}
+        const v=await deriveViewKey(c);const old=on?sh.viewKey:null;
+        await store.put('config','share',{on:true,viewKey:v,portraits:on?portraits:$('#scPort').checked});
+        if(old&&old!==v)publisher.wipe(old).catch(e=>console.warn('wipe old view',e));
+        publisher.kick();toast(on?'Viewer code changed.':'View-only sharing is on.');setTimeout(()=>shareDialog(),300)
+      }catch(e){console.error(e);toast('Something went wrong. Please try again.');return false}
+    },{saveLabel:on?'Change code':'Start sharing'});return}
+  dlg(`<div id="shBox"><h2>Share view-only</h2>${intro}
+    <p><b>Status:</b> <span id="scState">${esc(stTxt)}</span></p>
+    <div class="pick"><button class="b" id="scCopy">📋 Copy share link</button></div>
+    <p style="font-size:13px;color:var(--mut)">Send the link and, separately, the viewer code (by phone or in person is safest).</p>
+    ${portraitBox}
+    <div class="pick" style="margin-top:10px"><button class="b" id="scChange">🔑 Change viewer code</button><button class="b" id="scStop">⛔ Stop sharing</button></div></div>`,()=>true,{saveLabel:'Done'});
+  $('#scCopy').onclick=async()=>{const l=shareLink();try{await navigator.clipboard.writeText(l);toast('Link copied: '+l,4000)}catch(e){prompt('Copy this link:',l)}};
+  $('#scPort').onchange=async e=>{await store.put('config','share',{...structuredClone(sh),portraits:e.target.checked});publisher.kick();toast(e.target.checked?'Portraits will be shown to viewers.':'Portraits will be hidden from viewers.')};
+  $('#scChange').onclick=()=>shareDialog('change');
+  $('#scStop').onclick=async()=>{if(!confirm('Stop sharing? Everyone with the viewer code loses access straight away. You can share again later with a new code.'))return;
+    const old=sh.viewKey;await store.put('config','share',{on:false,viewKey:null,portraits});publisher.wipe(old).catch(e=>console.warn('wipe view',e));toast('Sharing stopped.');$('#dlg').classList.remove('open')};
+}
 $('#bMenu').onclick=()=>{
   const bytes=Object.values(M()).reduce((s,m)=>s+(m.size||0)*1.34+(m.thumb?.length||0),0);
+  if(VIEW){dlg(`<h2>More</h2><p>${ROMSG} Ask the family tree's owner if something needs changing.</p><div class="pick">
+   <button class="b" id="mLock">🔒 Forget the viewer code on this device</button></div>`,()=>true,{saveLabel:'Done'});
+   $('#mLock').onclick=()=>{if(confirm('Forget the viewer code on this device?')){localStorage.removeItem('tpt:view');location.reload()}};return}
   dlg(`<h2>More</h2><div class="pick">
+   <button class="b" id="mShare">👁 Share view-only (for family)</button>
    <button class="b" id="mGed">⬇ Export GEDCOM (for Ancestry, FamilySearch…)</button>
-   <button class="b" id="mGedIn">⬆ Import a GEDCOM file</button>
+   <button class="b" id="mGedIn">⬆ Import GEDCOM (.ged) from Ancestry, FamilySearch…</button>
    <button class="b" id="mJson">⬇ Download full backup (with photos &amp; documents)</button>
    <button class="b" id="mJsonIn">⬆ Restore a backup</button>
    <button class="b" id="mLock">🔒 Lock this device (asks for the passcode next time)</button></div>
    <p style="font-size:14px;color:var(--mut);margin-top:12px">${Object.keys(P()).length} people · ${Object.keys(M()).length} photos/documents · about ${(bytes/1048576).toFixed(1)} MB of the 1 GB free cloud space.<br>
    Status: ${esc($('#status').textContent)}${store.pendingCount()?` · ${store.pendingCount()} change(s) waiting to upload`:''}</p>`,()=>true,{saveLabel:'Done'});
-  $('#mGed').onclick=exportGedcom;$('#mJson').onclick=exportJSON;
+  $('#mShare').onclick=()=>shareDialog();$('#mGed').onclick=exportGedcom;$('#mJson').onclick=exportJSON;
   $('#mGedIn').onclick=()=>pickFile('.ged,text/plain',importGedcom);$('#mJsonIn').onclick=()=>pickFile('.json,application/json',importJSON);
   $('#mLock').onclick=()=>{if(DEMO)return toast('Demo mode has no passcode.');if(confirm('Lock this device? You will need the family passcode to open the tree again. Nothing is deleted.')){localStorage.removeItem('tpt:room');location.reload()}};
 };
 addEventListener('keydown',e=>{if(e.key==='Escape'){$('#dlg').classList.remove('open');$('#vX')?.click()}});
 
-window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia};
+window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW}};
 boot();
