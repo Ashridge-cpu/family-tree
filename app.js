@@ -241,6 +241,10 @@ function seg(a,b,group,ids,dim=1){const d=new THREE.Vector3().subVectors(b,a),le
 function loadImg(src){if(imgCache.has(src))return imgCache.get(src);const p=new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=src});imgCache.set(src,p);return p}
 function roundRect(x,X,Y,w,h,r){x.beginPath();x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath()}
 function fitText(x,t,maxW,size,font){let s=size;do{x.font=font.replace('#',s);if(x.measureText(t).width<=maxW)break;s-=1}while(s>10);return s}
+// small padlock badge (owner only): this person is hidden from the shared view
+function drawLock(x,X,Y){x.save();x.fillStyle='rgba(20,12,4,.85)';x.beginPath();x.arc(X+31,Y+33,40,0,Math.PI*2);x.fill();x.strokeStyle='#e8c477';x.lineWidth=3;x.stroke();
+  x.lineWidth=7;x.beginPath();x.arc(X+31,Y+26,13,Math.PI,0);x.lineTo(X+44,Y+34);x.moveTo(X+18,Y+26);x.lineTo(X+18,Y+34);x.stroke();
+  x.fillStyle='#f6dc98';roundRect(x,X+9,Y+32,44,32,5);x.fill();x.fillStyle='#2b1d0b';x.beginPath();x.arc(X+31,Y+45,5,0,Math.PI*2);x.fill();x.fillRect(X+29,Y+46,4,10);x.restore()}
 function drawFrame(p,img){
   const c=document.createElement('canvas');c.width=TEXW;c.height=TEXH;const x=c.getContext('2d');const k=TEXW/512;x.scale(k,k);const W=512,H=704;
   const unknown=p.unknown;
@@ -271,10 +275,11 @@ function drawFrame(p,img){
   x.textAlign='center';x.textBaseline='middle';const nm=unknown?'Unknown':(nick(p)||shortName(p)||fullName(p));
   const fs=fitText(x,nm,W-140,40,'600 #px Cinzel, Georgia, serif');x.fillStyle='#f6dc98';x.fillText(nm,W/2,NY+42);
   x.font='500 30px Cormorant, Georgia, serif';x.fillStyle='#d9c08a';x.fillText(years(p)||' ',W/2,NY+84);
+  if(p.hidden&&!VIEW)drawLock(x,W-92,30);
   const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=4;return t;
 }
 async function frameTexture(p){
-  const m=p.portrait&&M()[p.portrait]; const key=[p.id,fullName(p),p.birth,p.death,p.deceased,p.unknown,m?.id,!!m?.thumb].join('|');
+  const m=p.portrait&&M()[p.portrait]; const key=[p.id,fullName(p),p.birth,p.death,p.deceased,p.unknown,m?.id,!!m?.thumb,!!p.hidden&&!VIEW].join('|');
   if(texCache.has(key))return texCache.get(key);
   const pr=(async()=>drawFrame(p,m?.thumb?await loadImg(m.thumb):null))(); texCache.set(key,pr); return pr;
 }
@@ -430,7 +435,7 @@ function renderList(){
   const byGen={};ps.forEach(p=>{const g=L.gen[p.id]??0;(byGen[g]=byGen[g]||[]).push(p)});
   const label=g=>({'-4':'Great-great-grandparents','-3':'Great-grandparents','-2':'Grandparents','-1':'Parents','0':'Mark & Emma\'s generation','1':'Children','2':'Grandchildren'}[g]||(g<0?`${-g} generations up`:`${g} generations down`));
   $('#list').innerHTML=Object.keys(byGen).map(Number).sort((a,b)=>a-b).map(g=>`<div class="gen">${label(g)}</div>`+byGen[g].sort((a,b)=>bySib(a.id,b.id)).map(p=>
-    `<div class="li${p.id===sel?' sel':''}" data-id="${esc(p.id)}">${avatarHTML(p)}<div><b>${esc(nick(p)?nick(p):fullName(p))}</b><small>${esc(years(p))}</small></div></div>`).join('')).join('')||'<p style="color:var(--mut)">No matches.</p>';
+    `<div class="li${p.id===sel?' sel':''}" data-id="${esc(p.id)}">${avatarHTML(p)}<div><b>${esc(nick(p)?nick(p):fullName(p))}${p.hidden&&!VIEW?' <span class="lockb" title="Hidden from shared view">🔒</span>':''}</b><small>${esc(years(p))}</small></div></div>`).join('')).join('')||'<p style="color:var(--mut)">No matches.</p>';
 }
 $('#search').addEventListener('input',renderList);
 $('#list').addEventListener('click',e=>{const li=e.target.closest('.li');if(li){select(li.dataset.id,true);if(SMALL)$('#left').classList.remove('show')}});
@@ -463,8 +468,12 @@ function renderDetails(){
     <div class="grid">${docs.map(x=>{const m=M()[x];return m.thumb?`<div class="th" data-view="${x}" title="${esc(m.title)}" style="background-image:url('${m.thumb}')"></div>`:`<div class="th doc" data-view="${x}" title="${esc(m.title)}"><i>PDF</i>${esc((m.title||'').slice(0,40))}</div>`}).join('')||'<span style="color:var(--mut);grid-column:1/-1">No documents yet.</span>'}</div></div>
    <div class="sec"><h3>Moving portrait <span>${p.video&&M()[p.video]?`<button class="mini" data-view="${p.video}">View</button> <button class="mini danger" data-do="delvid">Remove</button>`:`<button class="mini" data-do="addvid">+ Add</button>`}</span></h3>
     <div style="font-size:13px;color:var(--mut)">A short silent looping video (MP4/WebM, a few seconds, max 6 MB) that plays in the frame when you're close, like the moving portraits in Harry Potter.</div></div>
+   <div class="sec"><label style="display:flex;gap:8px;align-items:center;cursor:pointer" title="Locked people are left out of the view-only copy completely, with all links to them"><input type="checkbox" data-hide${p.hidden?' checked':''} style="width:auto"> 🔒 Hide from shared view</label></div>
    <div class="sec" style="display:flex;justify-content:space-between;gap:8px"><button class="mini" data-do="edit">Edit details</button><button class="mini danger" data-do="delete">Delete person</button></div>`}`;
 }
+$('#details').addEventListener('change',async e=>{if(!e.target.matches('[data-hide]')||VIEW)return;const q=structuredClone(P()[sel]);
+  if(e.target.checked)q.hidden=true;else delete q.hidden;await store.put('persons',q.id,q);
+  toast(e.target.checked?(nick(q)||fullName(q))+' is hidden from the shared view.':(nick(q)||fullName(q))+' is shown in the shared view again.')});
 $('#details').addEventListener('click',e=>{const t=e.target.closest('[data-go],[data-view],[data-do],[data-unlink],[data-relset]');if(!t)return;
   if(t.dataset.relset)return relDialog(sel,t.dataset.relset);
   if(t.dataset.unlink){const [k,...r]=t.dataset.unlink.split(':');return unlink(sel,k,r.join(':'))}
