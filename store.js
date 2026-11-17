@@ -10,11 +10,11 @@ export const COLLS=['persons','media','config'];  // synced live; 'chunks' are f
 export const CHUNK=900000;                         // base64 chars per chunk doc (< 1 MiB Firestore limit)
 const fbEnabled=()=>{const c=window.BS_FIREBASE_CONFIG||{};return !!(c.apiKey&&c.projectId&&c.appId)};
 
-export async function deriveRoomKey(code){
+export async function deriveRoomKey(code,salt='turner-pears-tree/room/v1'){
   const norm=code.normalize('NFKC').trim().toLowerCase().replace(/\s+/g,' ');
   const enc=new TextEncoder();
   const km=await crypto.subtle.importKey('raw',enc.encode(norm),'PBKDF2',false,['deriveBits']);
-  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:enc.encode('turner-pears-tree/room/v1'),iterations:600000},km,256);
+  const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:enc.encode(salt),iterations:600000},km,256);
   return [...new Uint8Array(bits)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
@@ -26,26 +26,30 @@ function tx(db,store,mode,fn){return new Promise((res,rej)=>{const t=db.transact
 async function allEntries(db,store){return new Promise((res,rej)=>{const out=[];const t=db.transaction(store);const c=t.objectStore(store).openCursor();
   c.onsuccess=()=>{const cur=c.result;if(cur){out.push([cur.key,cur.value]);cur.continue()}else res(out)};c.onerror=()=>rej(c.error)})}
 
-export async function createStore(room,{demo=false,onChange=()=>{},onStatus=()=>{}}={}){
-  const db=await openIDB('tpt-'+(demo?'demo':room.slice(0,24)));
+// View-only copies (see share.js) live at views/{viewKey}/... and are opened with base:'views', readOnly:true.
+export const deriveViewKey=code=>deriveRoomKey(code,'turner-pears-tree/view/v1');
+export async function createStore(room,{demo=false,base='trees',readOnly=false,onChange=()=>{},onStatus=()=>{}}={}){
+  const idbName='tpt-'+(demo?(readOnly?'demo-view':'demo'):(base==='views'?'v-':'')+room.slice(0,24));
+  const db=await openIDB(idbName);
   const data={persons:{},media:{},config:{}};
   for(const [k,v] of await allEntries(db,'docs')){const [c,id]=k.split('/');if(data[c])data[c][id]=v}
   const pending=new Map(await allEntries(db,'pending'));   // "coll/id" -> 'put' | 'del'
   let fb=null, status=(demo||!fbEnabled())?'local':'offline', serverSeen=false, blocked=false;
   const setStatus=s=>{if(s!==status){status=s;onStatus(s)}};
-  const bc=('BroadcastChannel'in window)?new BroadcastChannel('tpt-'+room.slice(0,12)):null;
+  const bc=('BroadcastChannel'in window)?new BroadcastChannel('tpt-'+(base==='views'?'v-':'')+room.slice(0,12)):null;
   if(bc)bc.onmessage=async()=>{for(const c of COLLS)data[c]={};for(const [k,v] of await allEntries(db,'docs')){const [c,id]=k.split('/');if(data[c])data[c][id]=v}COLLS.forEach(c=>onChange(c))};
   const idbPut=(c,id,doc)=>tx(db,'docs','readwrite',s=>s.put(doc,c+'/'+id));
   const idbDel=(c,id)=>tx(db,'docs','readwrite',s=>s.delete(c+'/'+id));
   const markPending=(k,v)=>{pending.set(k,v);return tx(db,'pending','readwrite',s=>s.put(v,k))};
   const clearPending=k=>{pending.delete(k);return tx(db,'pending','readwrite',s=>s.delete(k))};
-  const ref=(c,id)=>fb.fs.doc(fb.db,'trees',room,c,id);
+  const ref=(c,id)=>fb.fs.doc(fb.db,base,room,c,id);
+  const RO=()=>{throw new Error('read-only')};
   const recompute=()=>{if(demo||!fbEnabled())return setStatus('local');if(blocked)return setStatus('blocked');
     if(!fb||!navigator.onLine||!serverSeen)return setStatus('offline');setStatus(pending.size?'syncing':'synced')};
   window.addEventListener('online',recompute);window.addEventListener('offline',recompute);
 
   async function pushOne(k){
-    if(!fb||blocked)return; const v=pending.get(k); if(!v)return; const [c,id]=k.split('/');
+    if(!fb||blocked||readOnly)return; const v=pending.get(k); if(!v)return; const [c,id]=k.split('/');
     try{
       if(c==='chunks'){ if(v==='del')await fb.fs.deleteDoc(ref(c,id)); else {const d=await tx(db,'chunks','readonly',s=>s.get(id)); if(d!=null)await fb.fs.setDoc(ref(c,id),{d});} }
       else if(v==='del')await fb.fs.deleteDoc(ref(c,id));
@@ -55,16 +59,16 @@ export async function createStore(room,{demo=false,onChange=()=>{},onStatus=()=>
     recompute();
   }
   let flushing=false;
-  async function flush(){if(flushing||!fb||blocked||!serverSeen)return;flushing=true;
+  async function flush(){if(flushing||!fb||blocked||!serverSeen||readOnly)return;flushing=true;
     try{for(const k of [...pending.keys()])await pushOne(k)}finally{flushing=false}}
 
   const api={
-    data, demo, get status(){return status}, firebase:()=>!!fb,
-    async put(c,id,doc,{keepTime=false}={}){if(!keepTime)doc.updatedAt=Date.now();data[c][id]=doc;await idbPut(c,id,doc);
+    data, demo, readOnly, room, get status(){return status}, firebase:()=>!!fb, fbHandle:()=>fb,
+    async put(c,id,doc,{keepTime=false,local=false}={}){if(readOnly&&!local)RO();if(!keepTime)doc.updatedAt=Date.now();data[c][id]=doc;await idbPut(c,id,doc);
       await markPending(c+'/'+id,'put');if(bc)bc.postMessage(1);onChange(c);if(fb)pushOne(c+'/'+id);recompute()},
-    async del(c,id){delete data[c][id];await idbDel(c,id);await markPending(c+'/'+id,'del');if(bc)bc.postMessage(1);onChange(c);if(fb)pushOne(c+'/'+id);recompute()},
-    async putChunk(id,str){await tx(db,'chunks','readwrite',s=>s.put(str,id));await markPending('chunks/'+id,'put');if(fb)pushOne('chunks/'+id)},
-    async delChunk(id){await tx(db,'chunks','readwrite',s=>s.delete(id));await markPending('chunks/'+id,'del');if(fb)pushOne('chunks/'+id)},
+    async del(c,id){if(readOnly)RO();delete data[c][id];await idbDel(c,id);await markPending(c+'/'+id,'del');if(bc)bc.postMessage(1);onChange(c);if(fb)pushOne(c+'/'+id);recompute()},
+    async putChunk(id,str){if(readOnly)RO();await tx(db,'chunks','readwrite',s=>s.put(str,id));await markPending('chunks/'+id,'put');if(fb)pushOne('chunks/'+id)},
+    async delChunk(id){if(readOnly)RO();await tx(db,'chunks','readwrite',s=>s.delete(id));await markPending('chunks/'+id,'del');if(fb)pushOne('chunks/'+id)},
     async getChunk(id){let d=await tx(db,'chunks','readonly',s=>s.get(id));if(d!=null)return d;
       if(fb){try{const s=await fb.fs.getDoc(ref('chunks',id));if(s.exists()){d=s.data().d;await tx(db,'chunks','readwrite',st=>st.put(d,id));return d}}catch(e){console.warn('chunk',id,e)}}
       return null},
@@ -72,7 +76,7 @@ export async function createStore(room,{demo=false,onChange=()=>{},onStatus=()=>
     async exists(){if(Object.keys(data.config).length)return true;if(!fb||blocked)return null;
       try{const s=await Promise.race([fb.fs.getDocFromServer(ref('config','main')),new Promise((_,r)=>setTimeout(()=>r('timeout'),8000))]);return s.exists()}
       catch(e){if(String(e.code||e).includes('permission')){blocked=true;recompute()}return null}},
-    async wipeLocal(){db.close();await new Promise(r=>{const q=indexedDB.deleteDatabase('tpt-'+(demo?'demo':room.slice(0,24)));q.onsuccess=q.onerror=q.onblocked=()=>r()})},
+    async wipeLocal(){if(fb)fb.unsubs.forEach(u=>u());fb=null;db.close();await new Promise(r=>{const q=indexedDB.deleteDatabase(idbName);q.onsuccess=q.onerror=q.onblocked=()=>r()})},
     pendingCount:()=>pending.size,
   };
 
@@ -85,7 +89,7 @@ export async function createStore(room,{demo=false,onChange=()=>{},onStatus=()=>
       fb={fs,db:fdb,unsubs:[]};
       const seen={};
       COLLS.forEach(c=>{
-        fb.unsubs.push(fs.onSnapshot(fs.collection(fdb,'trees',room,c),{includeMetadataChanges:true},async snap=>{
+        fb.unsubs.push(fs.onSnapshot(fs.collection(fdb,base,room,c),{includeMetadataChanges:true},async snap=>{
           if(snap.metadata.fromCache)return;
           blocked=false; let changed=false; const server={};
           snap.forEach(d=>{if(!d.metadata.hasPendingWrites)server[d.id]=d.data()});
