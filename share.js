@@ -14,13 +14,17 @@ const stable=v=>JSON.stringify(v,(k,x)=>x&&typeof x==='object'&&!Array.isArray(x
 const VCOLLS=['persons','media','config'];
 
 // What a viewer gets for one person / which media are published.
-export function viewPerson(p,portraits,M){
-  const q=structuredClone(p);q.photos=[];q.docs=[];
+// People marked hidden (🔒 Hide from shared view) are left out completely, and every link pointing at them is removed.
+export const hiddenIds=P=>new Set(Object.values(P).filter(p=>p.hidden).map(p=>p.id));
+export function viewPerson(p,portraits,M,hid=new Set()){
+  const q=structuredClone(p);q.photos=[];q.docs=[];delete q.hidden;
+  q.parents=(q.parents||[]).filter(i=>!hid.has(i));q.spouses=(q.spouses||[]).filter(i=>!hid.has(i));
+  for(const f of ['marr','rel'])if(q[f])q[f]=Object.fromEntries(Object.entries(q[f]).filter(([i])=>!hid.has(i)));
   q.portrait=portraits&&p.portrait&&M[p.portrait]?p.portrait:null;
   q.video=portraits&&p.video&&M[p.video]?p.video:null;
   return q}
 export function viewMediaIds(P,M,portraits){const s=new Set();if(!portraits)return s;
-  for(const p of Object.values(P)){if(p.portrait&&M[p.portrait])s.add(p.portrait);if(p.video&&M[p.video])s.add(p.video)}return s}
+  for(const p of Object.values(P)){if(p.hidden)continue;if(p.portrait&&M[p.portrait])s.add(p.portrait);if(p.video&&M[p.video])s.add(p.video)}return s}
 
 export function createPublisher(store,{onState=()=>{}}={}){
   let k=null,h=null,cur=null,unsubs=[],pub={persons:{},media:{},config:{}},seen={},timer=null,running=false,again=false,state='off';
@@ -51,14 +55,14 @@ export function createPublisher(store,{onState=()=>{}}={}){
     if(!VCOLLS.every(c=>seen[c]))return;
     set('publishing');
     const P=store.data.persons,M=store.data.media,portraits=s.portraits!==false;
-    const want=viewMediaIds(P,M,portraits),ops=[];
+    const want=viewMediaIds(P,M,portraits),hid=hiddenIds(P),ops=[];
     // media first (chunks, then the media doc), so a person never points at a portrait that isn't there yet
     for(const mid of want){const m=M[mid];if(pub.media[mid]&&stable(pub.media[mid])===stable(m))continue;
       for(let i=0;i<m.n;i++){const d=await store.getChunk(mid+'_'+i);if(d==null)throw new Error('chunk missing '+mid);await run(cur,[{c:'chunks',id:mid+'_'+i,d:{d}}],1)}
       await run(cur,[{c:'media',id:mid,d:m}],1)}
-    for(const p of Object.values(P)){const q=viewPerson(p,portraits,M);if(!pub.persons[p.id]||stable(pub.persons[p.id])!==stable(q))ops.push({c:'persons',id:p.id,d:q})}
+    for(const p of Object.values(P)){if(p.hidden)continue;const q=viewPerson(p,portraits,M,hid);if(!pub.persons[p.id]||stable(pub.persons[p.id])!==stable(q))ops.push({c:'persons',id:p.id,d:q})}
     const main=store.data.config.main;if(main&&(!pub.config.main||stable(pub.config.main)!==stable(main)))ops.push({c:'config',id:'main',d:main});
-    for(const id of Object.keys(pub.persons))if(!P[id])ops.push({c:'persons',id,del:true});
+    for(const id of Object.keys(pub.persons))if(!P[id]||P[id].hidden)ops.push({c:'persons',id,del:true});
     await run(cur,ops);
     const dels=[];for(const [mid,m] of Object.entries(pub.media))if(!want.has(mid)){dels.push({c:'media',id:mid,del:true});for(let i=0;i<(m.n||0);i++)dels.push({c:'chunks',id:mid+'_'+i,del:true})}
     await run(cur,dels);
