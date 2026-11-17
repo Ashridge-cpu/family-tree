@@ -60,6 +60,7 @@ h1#title{position:fixed;top:10px;left:50%;transform:translateX(-50%);margin:0;fo
 .b svg{width:18px;height:18px;fill:var(--gold)}
 #hint{font-size:14px;color:var(--mut);letter-spacing:.03em}
 #status{position:fixed;left:16px;bottom:118px;z-index:5;font:12px system-ui;padding:3px 9px;border-radius:20px;border:1px solid var(--line);background:rgba(0,0,0,.5);color:var(--mut)}
+body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){display:none}
 #status.synced{color:#9fe0a0;border-color:#4a7}#status.blocked{color:#ffcf7a}
 #topbtns{position:fixed;top:14px;left:300px;z-index:5;display:flex;gap:6px}
 #mobtabs{display:none}
@@ -132,9 +133,9 @@ h1#title{position:fixed;top:10px;left:50%;transform:translateX(-50%);margin:0;fo
 <div id="lock" style="display:none"><div class="box" id="lockBox"></div></div>
 <input type="file" id="fileIn" hidden>
 
-<script src="config.js?v=202611161444"></script>
+<script src="config.js?v=202611171608"></script>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/"}}</script>
-<script type="module" src="app.js?v=202611161444"></script>
-<script>if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js?v=202611161444')</script>
+<script type="module" src="app.js?v=202611171608"></script>
+<script>if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js?v=202611171608')</script>
 </body>
 </html>
