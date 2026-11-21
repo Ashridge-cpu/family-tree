@@ -140,10 +140,10 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
 <div id="lock" style="display:none"><div class="box" id="lockBox"></div></div>
 <input type="file" id="fileIn" hidden>
 
-<script>window.TPT_VERSION='202611211622';</script>
-<script src="config.js?v=202611211622"></script>
+<script>window.TPT_VERSION='202611211704';</script>
+<script src="config.js?v=202611211704"></script>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/"}}</script>
-<script type="module" src="app.js?v=202611211622"></script>
+<script type="module" src="app.js?v=202611211704"></script>
 <script>
 (function(){
   window.TPT_VERSION=window.TPT_VERSION&&window.TPT_VERSION.indexOf('_')<0?window.TPT_VERSION:'local';
@@ -152,7 +152,7 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
   navigator.serviceWorker.addEventListener('controllerchange',function(){
     if(!had||reloading)return; reloading=true; location.reload();
   });
-  navigator.serviceWorker.register('sw.js?v=202611211622').then(function(reg){
+  navigator.serviceWorker.register('sw.js?v=202611211704').then(function(reg){
     function ask(){
       if(sessionStorage.getItem('tpt:swSkip')===(window.TPT_VERSION||''))return;
       if(confirm('A new version of the family tree is ready. Reload to use it?')){
