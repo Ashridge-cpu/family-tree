@@ -83,7 +83,7 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
 #lock{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#121a36 0%,#050810 75%)}
 #lock .box{text-align:center;width:min(440px,100%)}
 #lock p{color:var(--mut);font-size:16px;margin:6px 0}
-.toast{position:fixed;left:50%;top:70px;transform:translateX(-50%);background:#1a1407;border:1px solid var(--gold);padding:8px 16px;border-radius:10px;z-index:40;font-size:16px;box-shadow:0 0 18px rgba(230,180,90,.3)}
+.toast{position:fixed;left:50%;top:70px;transform:translateX(-50%);background:#1a1407;border:1px solid var(--gold);padding:8px 16px;border-radius:10px;z-index:40;font-size:16px;box-shadow:0 0 18px rgba(230,180,90,.3);max-width:min(560px,92vw);text-align:center}
 .pick{display:grid;gap:6px;margin-top:6px}
 @media (max-width:860px), (max-height:540px){
  body{font-size:16px}
@@ -133,9 +133,9 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
 <div id="lock" style="display:none"><div class="box" id="lockBox"></div></div>
 <input type="file" id="fileIn" hidden>
 
-<script src="config.js?v=202611211137"></script>
+<script src="config.js?v=202611211559"></script>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/"}}</script>
-<script type="module" src="app.js?v=202611211137"></script>
-<script>if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js?v=202611211137')</script>
+<script type="module" src="app.js?v=202611211559"></script>
+<script>if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js?v=202611211559')</script>
 </body>
 </html>
