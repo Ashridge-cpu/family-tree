@@ -10,7 +10,7 @@ const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const yearOf=s=>{const m=String(s||'').match(/(\d{4})/);return m?+m[1]:null};
 const uid=p=>(p||'p')+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
-const fullName=p=>p?[p.given,p.surname].filter(Boolean).join(' ').trim()||'Unnamed':'';
+const fullName=p=>p?(p.unknown?'Unknown parent':[p.given,p.surname].filter(Boolean).join(' ').trim()||'Unnamed'):'';
 const shortName=p=>p?([p.given.replace(/^(Vice-Admiral Sir|Lt-Col|Sir|Rev\.?|Dr\.?)\s+/,'').replace(/\s*".*?"\s*/g,' ').trim().split(/\s+/)[0],p.surname].filter(Boolean).join(' ')):'';
 const nick=p=>{const m=(p.given||'').match(/"(.+?)"/);return m?m[1]+' '+p.surname:null};
 const years=p=>{const b=yearOf(p.birth),d=yearOf(p.death);if(!b&&!d)return p.deceased?'†':'';return (b?(String(p.birth).match(/^c/i)?'c.':'')+b:'?')+(d||p.deceased?' – '+(d||'?'):'')};
@@ -505,6 +505,39 @@ function readForm(p){p.given=$('#fGiven').value.trim().slice(0,120);p.surname=$(
   if(!p.given&&!p.surname){toast('Please give at least a first name or surname.');return false}delete p.unknown;return true}
 const blank=o=>({id:uid('p'),given:'',surname:'',sex:'U',birth:'',birthPlace:'',death:'',deathPlace:'',deceased:false,notes:'',parents:[],spouses:[],marr:{},order:null,photos:[],docs:[],portrait:null,video:null,...o});
 async function save(p){if(VIEW)return toast(ROMSG);await store.put('persons',p.id,p)}
+
+async function makeUnknownParent(){const ph=blank({given:'',surname:'',unknown:true,notes:'Placeholder so brothers and sisters can be linked. Use "Add parent" on one of the children (or Edit here) to fill in the real person.'});await save(ph);return ph}
+const parentLabel=id=>{const p=P()[id];return!p?'':(p.unknown?'Unknown parent':fullName(p))}
+function sibBoxHTML(sId,oId){const o=P()[oId],s=P()[sId];if(!o||!s)return'';
+  const oPar=parentsOf(oId),sPar=parentsOf(sId),listed=oPar.length?oPar:sPar;
+  if(!listed.length)return`<p style="font-size:13px;color:var(--mut)">Neither has parents recorded yet. They will be shown as brothers or sisters through an unknown parent, which you can fill in later. No named ancestor is added.</p>`;
+  if(listed.length===1)return`<p style="font-size:13px;color:var(--mut)">They will share ${esc(parentLabel(listed[0]))} as a parent${oPar.length?'':' (from '+esc(fullName(s))+')'}.</p><input type="hidden" name="lSibHow" id="lSibHow" value="${esc(listed[0])}">`;
+  return`<div style="font-size:14px;margin:8px 0 4px">How are they siblings of each other?</div>`+
+    `<label style="display:flex;gap:8px;align-items:center"><input type="radio" name="lSibHow" value="both" checked style="width:auto"> Full siblings — share both ${esc(listed.map(parentLabel).join(' and '))}</label>`+
+    listed.map(i=>`<label style="display:flex;gap:8px;align-items:center"><input type="radio" name="lSibHow" value="${esc(i)}" style="width:auto"> Half-siblings — through ${esc(parentLabel(i))} only</label>`).join('')}
+function chosenSibParents(srcPar){const el=$('input[name="lSibHow"]:checked')||$('#lSibHow');const v=el?.value;if(!v||v==='both')return[...srcPar];return srcPar.includes(v)?[v]:[...srcPar]}
+function isDescendant(a,b){const seen=new Set();const dn=x=>childrenOf(x).forEach(c=>{if(!seen.has(c)){seen.add(c);dn(c)}});dn(a);return seen.has(b)}
+async function attachToParents(id,want){const q=structuredClone(P()[id]);if(!q||!want.length)return false;
+  const cur=(q.parents||[]).filter(x=>P()[x]),phs=cur.filter(x=>P()[x].unknown),known=cur.filter(x=>!P()[x].unknown);
+  if(want.every(x=>cur.includes(x)))return toast(fullName(q)+' is already linked as a sibling through those parents.'),false;
+  for(const parent of want){const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(id);
+    if(id===parent||desc.has(parent))return toast('That would make someone their own ancestor.'),false}
+  const extra=want.filter(x=>!known.includes(x));
+  if(known.length+extra.length>2)return toast(fullName(q)+' already has two parents, or a different parent recorded. Remove one with ✕ first, or choose a half-sibling link through one parent.'),false;
+  q.parents=[...known,...extra];await save(q);
+  for(const ph of phs){if(!childrenOf(ph).length)await store.del('persons',ph)}
+  return true}
+async function linkAsSiblings(sId,oId){if(sId===oId||!P()[sId]||!P()[oId])return false;
+  if(P()[sId].unknown||P()[oId].unknown)return toast('Pick a real person, not an unknown-parent placeholder.'),false;
+  if(parentsOf(sId).includes(oId)||parentsOf(oId).includes(sId)||isDescendant(sId,oId)||isDescendant(oId,sId))
+    return toast('That would make a parent and child into siblings.'),false;
+  let srcPar=parentsOf(oId),attach=sId;
+  if(!srcPar.length){srcPar=parentsOf(sId);attach=oId}
+  if(!srcPar.length){const ph=await makeUnknownParent();
+    for(const id of [sId,oId]){const q=structuredClone(P()[id]);q.parents=[ph.id];await save(q)}
+    return true}
+  return attachToParents(attach,chosenSibParents(srcPar))}
+
 function personDialog(act){if(VIEW)return toast(ROMSG);
   const s=P()[sel]; if(!s&&act!=='first')return toast('Select someone first.');
   const nm=s?(nick(s)||fullName(s)):'';
@@ -513,19 +546,21 @@ function personDialog(act){if(VIEW)return toast(ROMSG);
     const extra=`<label for="fOther">Other parent</label><select id="fOther">${sp.map(i=>`<option value="${i}">${esc(fullName(P()[i]))}</option>`).join('')}<option value="">Not known / not in the tree</option></select>`;
     return dlg(`<h2>Add a child of ${esc(nm)}</h2>`+personForm({surname:s.sex==='F'&&sp[0]?P()[sp[0]].surname:s.surname},extra),async()=>{const c=blank();if(!readForm(c))return false;const o=$('#fOther').value;c.parents=[s.id,...(o?[o]:[])];await save(c);select(c.id,true)})}
   if(act==='sibling')return dlg(`<h2>Add a brother or sister of ${esc(nm)}</h2>`+personForm({surname:s.surname}),async()=>{const c=blank();if(!readForm(c))return false;
-    let par=parentsOf(s.id);if(!par.length){const ph=blank({given:'Parent of '+(s.given||nm),surname:'',unknown:true,notes:'Placeholder so brothers and sisters can be linked. Use "Add parent" on one of the children (or Edit here) to fill in the real person.'});await save(ph);par=[ph.id];const q=structuredClone(s);q.parents=[ph.id];await save(q)}
+    let par=parentsOf(s.id);if(!par.length){const ph=await makeUnknownParent();par=[ph.id];const q=structuredClone(P()[s.id]);q.parents=[ph.id];await save(q)}
     c.parents=[...par];await save(c);select(c.id,true)});
   if(act==='spouse')return dlg(`<h2>Add a partner of ${esc(nm)}</h2>`+personForm({},relFields()),async()=>{const c=blank();if(!readForm(c))return false;await save(c);await saveRel(s.id,c.id);await offerKids(s.id,c.id);select(c.id,true)});
   if(act==='link'){const others=Object.values(P()).filter(p=>p.id!==s.id).sort((x,y)=>fullName(x).localeCompare(fullName(y)));
-    return dlg(`<h2>Link ${esc(nm)} to someone already in the tree</h2>
-      <label for="lRel">${esc(nm)} is the…</label><select id="lRel"><option value="spouse">Partner / spouse of</option><option value="child">Parent of</option><option value="parent">Child of</option></select>
+    const r=dlg(`<h2>Link ${esc(nm)} to someone already in the tree</h2>
+      <label for="lRel">${esc(nm)} is the…</label><select id="lRel"><option value="spouse">Partner / spouse of</option><option value="child">Parent of</option><option value="parent">Child of</option><option value="sibling">Sibling of</option></select>
       <label for="lWho">…this person</label><select id="lWho">${others.map(p=>`<option value="${esc(p.id)}">${esc(fullName(p))}${p.birth?' ('+esc(p.birth)+')':''}</option>`).join('')}</select>
       <div id="lMarrBox">${relFields()}</div>
-      <p style="font-size:13px;color:var(--mut)">This only joins two people who are already in the tree; nobody new is created. Use the ✕ next to a name to undo a link.</p>`,async()=>{
+      <div id="lSibBox" style="display:none"></div>
+      <p style="font-size:13px;color:var(--mut)">This only joins two people who are already in the tree; nobody new is created. Use the ✕ next to a parent to undo a sibling link.</p>`,async()=>{
       const rel=$('#lRel').value,o=$('#lWho').value;if(!o||!P()[o])return false;
       if(rel==='spouse'){
         if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
         await saveRel(s.id,o);await offerKids(s.id,o);await offerKids(o,s.id)}
+      else if(rel==='sibling'){if(await linkAsSiblings(s.id,o)===false)return false}
       else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
         if(cur.includes(parent))return toast('Already linked.'),false;
         const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(child);
@@ -538,8 +573,10 @@ function personDialog(act){if(VIEW)return toast(ROMSG);
         const op=q.parents.find(x=>x!==parent);
         if(op&&!spousesOf(parent).includes(op)&&confirm('Also link '+fullName(P()[parent])+' and '+fullName(P()[op])+' as partners?'))
           for(const [x,y] of [[parent,op],[op,parent]]){const r=structuredClone(P()[x]);r.spouses=[...new Set([...(r.spouses||[]),y])];await save(r)}}
-      toast('Linked.');select(s.id,true)},{saveLabel:'Link'}),
-      $('#lRel').onchange=()=>{$('#lMarrBox').style.display=$('#lRel').value==='spouse'?'':'none'}}
+      toast('Linked.');select(s.id,true)},{saveLabel:'Link'});
+    const syncLinkExtras=()=>{const rel=$('#lRel').value;$('#lMarrBox').style.display=rel==='spouse'?'':'none';const box=$('#lSibBox');if(!box)return;
+      if(rel==='sibling'){box.style.display='';box.innerHTML=sibBoxHTML(s.id,$('#lWho').value)}else{box.style.display='none';box.innerHTML=''}};
+    $('#lRel').onchange=syncLinkExtras;$('#lWho').onchange=syncLinkExtras;syncLinkExtras();return r}
   if(act==='parent'){const par=parentsOf(s.id),ph=par.find(i=>P()[i].unknown);
     if(ph){sel=ph;return dlg(`<h2>Add a parent of ${esc(nm)}</h2>`+personForm({sex:'U'}),async()=>{const q=structuredClone(P()[ph]);if(!readForm(q))return false;await save(q);select(q.id,true)})}
     if(par.length>=2)return toast(nm+' already has two parents in the tree. Select one of them to edit.');
