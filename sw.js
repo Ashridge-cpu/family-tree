@@ -1,5 +1,5 @@
 // Offline-first: serve the app shell from cache instantly, refresh it in the background.
-const V='tpt-v1-202611211137';
+const V='tpt-v1-202611211559';
 const SHELL=['./','./index.html','./app.js','./store.js','./share.js','./seed.js','./config.js','./manifest.webmanifest','./icon-192.png','./icon-512.png',
  './vendor/three.module.min.js','./vendor/OrbitControls.js','./vendor/cinzel.woff2','./vendor/cormorant.woff2','./vendor/cormorant-italic.woff2'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(SHELL)));self.skipWaiting()});
