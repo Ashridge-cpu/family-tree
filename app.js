@@ -343,11 +343,18 @@ function tick(){
   videoTick(dt);
   renderer.render(scene,camera);
 }
-function flyTo(id,instant){const p=L.pos[id];if(!p)return;const t1=p.clone();t1.y-=0.1;
-  const dir=new THREE.Vector3().subVectors(camera.position,controls.target);if(dir.length()<.1)dir.set(0,.25,1);dir.normalize();if(dir.z<0.2){dir.z=0.6;dir.normalize()}
-  const c1=t1.clone().addScaledVector(dir,SMALL?8.5:7);
-  if(instant){controls.target.copy(t1);camera.position.copy(c1);return}
-  fly={t:0,d:.9,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
+function flyTo(id,instant){flyToGroup([id],instant)}
+function flyToGroup(ids,instant){const pts=(ids||[]).map(i=>L.pos[i]).filter(Boolean);if(!pts.length)return;
+  const t1=pts.reduce((s,p)=>s.add(p.clone()),new THREE.Vector3()).multiplyScalar(1/pts.length);t1.y-=0.1;
+  let span=0;pts.forEach(p=>{span=Math.max(span,p.distanceTo(t1))});
+  const dir=new THREE.Vector3().subVectors(camera.position,controls.target);if(dir.length()<.1)dir.set(-0.4,.35,1);dir.normalize();if(dir.z<0.2){dir.z=0.6;dir.normalize()}
+  const c1=t1.clone().addScaledVector(dir,Math.max(SMALL?8.5:7,span*2.6+5.5));
+  if(instant){controls.target.copy(t1);camera.position.copy(c1);controls.update();return}
+  fly={t:0,d:1,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
+function afterSiblingLink(a,b,already){clearTimeout(rbT);rebuild();sel=a;applyVisibility();renderList();renderDetails();
+  const par=parentsOf(a).filter(x=>parentsOf(b).includes(x)),names=fullName(P()[a])+' and '+fullName(P()[b]);
+  toast(already?names+' are already linked as brothers or sisters.':names+' are now linked as brothers or sisters.',4500);
+  flyToGroup([a,b,...par])}
 function flyHome(instant){const a=L.pos.mark,b=L.pos.emma;let t1;if(a&&b)t1=a.clone().lerp(b,.5);else if(sel&&L.pos[sel])t1=L.pos[sel].clone();else t1=new THREE.Vector3();
   if(!SMALL)t1.x+=1.4; t1.y+=SMALL?0.8:1.2; const D=17.5*Math.pow(Math.max(1,0.95/camera.aspect),0.6); const c1=t1.clone().add(new THREE.Vector3(-0.53*D,3.4,0.85*D));
   if(instant){controls.target.copy(t1);camera.position.copy(c1);controls.update();return}fly={t:0,d:1.1,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
@@ -519,7 +526,7 @@ function chosenSibParents(srcPar){const el=$('input[name="lSibHow"]:checked')||$
 function isDescendant(a,b){const seen=new Set();const dn=x=>childrenOf(x).forEach(c=>{if(!seen.has(c)){seen.add(c);dn(c)}});dn(a);return seen.has(b)}
 async function attachToParents(id,want){const q=structuredClone(P()[id]);if(!q||!want.length)return false;
   const cur=(q.parents||[]).filter(x=>P()[x]),phs=cur.filter(x=>P()[x].unknown),known=cur.filter(x=>!P()[x].unknown);
-  if(want.every(x=>cur.includes(x)))return toast(fullName(q)+' is already linked as a sibling through those parents.'),false;
+  if(want.every(x=>cur.includes(x)))return 'already';
   for(const parent of want){const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(id);
     if(id===parent||desc.has(parent))return toast('That would make someone their own ancestor.'),false}
   const extra=want.filter(x=>!known.includes(x));
@@ -560,7 +567,7 @@ function personDialog(act){if(VIEW)return toast(ROMSG);
       if(rel==='spouse'){
         if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
         await saveRel(s.id,o);await offerKids(s.id,o);await offerKids(o,s.id)}
-      else if(rel==='sibling'){if(await linkAsSiblings(s.id,o)===false)return false}
+      else if(rel==='sibling'){const sr=await linkAsSiblings(s.id,o);if(sr===false)return false;afterSiblingLink(s.id,o,sr==='already');return true}
       else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
         if(cur.includes(parent))return toast('Already linked.'),false;
         const desc=new Set(),dn=x=>childrenOf(x).forEach(c=>{if(!desc.has(c)){desc.add(c);dn(c)}});dn(child);
