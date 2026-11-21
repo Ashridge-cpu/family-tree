@@ -85,6 +85,13 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
 #lock p{color:var(--mut);font-size:16px;margin:6px 0}
 .toast{position:fixed;left:50%;top:70px;transform:translateX(-50%);background:#1a1407;border:1px solid var(--gold);padding:8px 16px;border-radius:10px;z-index:40;font-size:16px;box-shadow:0 0 18px rgba(230,180,90,.3);max-width:min(560px,92vw);text-align:center}
 .pick{display:grid;gap:6px;margin-top:6px}
+#lWhoList{max-height:min(240px,40vh);overflow:auto;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.25);margin-top:4px}
+#lWhoList .who{display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:inherit;font:inherit;cursor:pointer}
+#lWhoList .who:last-of-type{border-bottom:0}
+#lWhoList .who b{display:block;color:var(--gold);font-size:15px}
+#lWhoList .who small{display:block;color:var(--mut);font-size:12px;margin-top:2px}
+#lWhoList .who.on{background:rgba(214,170,80,.18)}
+#lWhoList .dup{color:#f0c36a;font-weight:500;font-size:12px}
 @media (max-width:860px), (max-height:540px){
  body{font-size:16px}
  h1#title{font-size:20px;top:8px}
@@ -133,9 +140,32 @@ body.viewonly #btns [data-act]:not([data-act=home]):not([data-act=focus]){displa
 <div id="lock" style="display:none"><div class="box" id="lockBox"></div></div>
 <input type="file" id="fileIn" hidden>
 
-<script src="config.js?v=202611211559"></script>
+<script>window.TPT_VERSION='202611211622';</script>
+<script src="config.js?v=202611211622"></script>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/"}}</script>
-<script type="module" src="app.js?v=202611211559"></script>
-<script>if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js?v=202611211559')</script>
+<script type="module" src="app.js?v=202611211622"></script>
+<script>
+(function(){
+  window.TPT_VERSION=window.TPT_VERSION&&window.TPT_VERSION.indexOf('_')<0?window.TPT_VERSION:'local';
+  if(!('serviceWorker'in navigator)||location.protocol!=='https:')return;
+  var had=!!navigator.serviceWorker.controller, reloading=false;
+  navigator.serviceWorker.addEventListener('controllerchange',function(){
+    if(!had||reloading)return; reloading=true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js?v=202611211622').then(function(reg){
+    function ask(){
+      if(sessionStorage.getItem('tpt:swSkip')===(window.TPT_VERSION||''))return;
+      if(confirm('A new version of the family tree is ready. Reload to use it?')){
+        if(reg.waiting)reg.waiting.postMessage('skip'); else location.reload();
+      } else sessionStorage.setItem('tpt:swSkip', window.TPT_VERSION||'');
+    }
+    if(reg.waiting&&had)ask();
+    reg.addEventListener('updatefound',function(){
+      var sw=reg.installing; if(!sw)return;
+      sw.addEventListener('statechange',function(){ if(sw.state==='installed'&&had)ask(); });
+    });
+  });
+})();
+</script>
 </body>
 </html>
