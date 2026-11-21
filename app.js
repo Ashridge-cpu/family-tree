@@ -134,28 +134,47 @@ function aliveIn(p,Y){const b=yearOf(p.birth),d=yearOf(p.death);if(d&&Y>d)return
 
 /* ======================= layout ======================= */
 const SX=2.5,SY=4.4,SZ=2.9,STAG=-0.6,TIER=0.4;  // TIER lifts each sibling further back so faces show over the ones in front
-// Generations follow blood first (parent / child / siblings), then partners are attached.
-// A spouse or child link must not pin someone to the wrong row once they share a parent with a sibling.
+// Generations are a constraint system: parent/child differ by one and siblings share a row;
+// partners share a row and sit side by side. Parentless people inherit their row from a
+// partner first, then from their children. If a partner link clashes with a blood link,
+// the blood link wins and a conflict is recorded for a toast.
+let genConflicts=[];
 function assignGens(){
-  const ps=P(), ids=Object.keys(ps), gen={};
-  const blood=x=>[...parentsOf(x).map(y=>[y,-1]),...childrenOf(x).map(y=>[y,1])];
+  const ps=P(), ids=Object.keys(ps), gen={}, conflicts=[];
   const fill=(start,g0)=>{if(gen[start]!=null)return;gen[start]=g0;const q=[start];
-    while(q.length){const x=q.shift(),g=gen[x];for(const [y,d] of blood(x))if(gen[y]==null){gen[y]=g+d;q.push(y)}}};
-  const roots=[ps.mark?'mark':null,...ids].filter(Boolean);
-  for(const r of roots)if(gen[r]==null)fill(r,0);
-  let more=true;while(more){more=false;for(const id of ids){if(gen[id]==null)continue;for(const s of spousesOf(id))if(gen[s]==null){fill(s,gen[id]);more=true}}}
-  // If a child ended up on the wrong row (usually reached earlier via a partner), move them and their own partner/descendants under that parent so siblings share a row. Do not drag along in-laws who already belong to the parent's other line.
+    while(q.length){const x=q.shift(),g=gen[x];
+      for(const y of parentsOf(x))if(gen[y]==null){gen[y]=g-1;q.push(y)}
+      for(const y of childrenOf(x))if(gen[y]==null){gen[y]=g+1;q.push(y)}}};
   const bloodOf=id=>{const s=new Set([id]),q=[id];while(q.length){const x=q.shift();parentsOf(x).concat(childrenOf(x)).forEach(y=>{if(!s.has(y)){s.add(y);q.push(y)}})}return s};
-  const descs=id=>{const s=new Set(),q=[id];while(q.length){const x=q.shift();if(s.has(x))continue;s.add(x);childrenOf(x).forEach(k=>q.push(k))}return s};
-  let moved=true,guard=0;
-  while(moved&&guard++<12){moved=false;
-    for(const id of ids){if(gen[id]==null)continue;const want=gen[id]+1;
-      for(const c of childrenOf(id)){if(gen[c]==null){gen[c]=want;moved=true;continue}if(gen[c]===want)continue;
-        const frozen=bloodOf(id);descs(c).forEach(x=>frozen.delete(x));
-        const fol=new Set(),stk=[c];while(stk.length){const x=stk.pop();if(fol.has(x)||frozen.has(x))continue;fol.add(x);childrenOf(x).forEach(k=>stk.push(k));spousesOf(x).forEach(k=>stk.push(k))}
-        if(!fol.size||fol.has(id))continue;
-        const delta=want-gen[c];fol.forEach(i=>{if(gen[i]!=null)gen[i]+=delta});moved=true}}}
-  return gen}
+  const shift=(id,delta)=>{if(!delta)return;bloodOf(id).forEach(i=>{if(gen[i]!=null)gen[i]+=delta})};
+  if(ps.mark)fill('mark',0);
+  let more=true,guard=0;
+  while(more&&guard++<48){more=false;
+    for(const id of ids){if(gen[id]!=null)continue;const s=spousesOf(id).find(x=>gen[x]!=null);if(s){fill(id,gen[s]);more=true}}
+    if(more)continue;
+    for(const id of ids){if(gen[id]!=null)continue;const c=childrenOf(id).find(x=>gen[x]!=null);if(c){fill(id,gen[c]-1);more=true}}
+    if(more)continue;
+    for(const id of ids){if(gen[id]!=null)continue;const p=parentsOf(id).find(x=>gen[x]!=null);if(p){fill(id,gen[p]+1);more=true}}
+    if(more)continue;
+    const free=i=>gen[i]==null, root=i=>free(i)&&!parentsOf(i).length, hasBlood=i=>parentsOf(i).length||childrenOf(i).length;
+    const nxt=ids.find(i=>root(i)&&hasBlood(i))||ids.find(i=>root(i)&&!spousesOf(i).some(s=>free(s)&&hasBlood(s)))||ids.find(i=>root(i))||ids.find(free);if(nxt){fill(nxt,0);more=true}}
+  const uf={};
+  const fnd=x=>{const st=[];while(uf[x]!=null){st.push(x);x=uf[x]}st.forEach(i=>uf[i]=x);return x};
+  const uni=(a,b)=>{const ra=fnd(a),rb=fnd(b);if(ra!==rb)uf[rb]=ra};
+  ids.forEach(id=>{if(gen[id]==null)return;bloodOf(id).forEach(j=>uni(id,j))});
+  const markRoot=ps.mark&&gen.mark!=null?fnd('mark'):null;
+  let moved=true,g2=0;
+  while(moved&&g2++<16){moved=false;
+    for(const id of ids){if(gen[id]==null)continue;
+      for(const s of spousesOf(id)){if(id>s||gen[s]==null||gen[s]===gen[id])continue;
+        const ra=fnd(id),rb=fnd(s);
+        if(ra===rb){conflicts.push([id,s,'partner']);continue}
+        const shiftId=(markRoot!=null&&ra===markRoot)?s:(markRoot!=null&&rb===markRoot)?id:s;
+        const other=shiftId===id?s:id;
+        shift(shiftId,gen[other]-gen[shiftId]);uni(id,s);moved=true}}}
+  for(const id of ids){if(gen[id]==null)continue;
+    for(const c of childrenOf(id)){if(gen[c]==null)gen[c]=gen[id]+1;else if(gen[c]!==gen[id]+1)conflicts.push([id,c,'blood'])}}
+  genConflicts=conflicts;return gen}
 function layout(){
   const ps=P(), ids=Object.keys(ps), gen=assignGens();
   const pos={}, gens=[...new Set(Object.values(gen))].sort((a,b)=>a-b);
@@ -206,7 +225,7 @@ function layout(){
       let tx=pos[s].x+side*(reach+1+mine)*SX;const edge=og.x+(side>0?og.right:og.left)+side*(0.7+mine)*SX;if(ou.idx>0)tx=side>0?Math.max(tx,edge):Math.min(tx,edge);const d=new THREE.Vector3(tx-pos[u.head].x,pos[s].y-pos[u.head].y,pos[s].z-pos[u.head].z);
       for(const id in u.off)pos[id].add(d)}
   }
-  return {pos,gen};
+  return {pos,gen,conflicts:genConflicts};
 }
 
 /* ======================= three.js scene ======================= */
@@ -369,12 +388,27 @@ function flyToGroup(ids,instant){const pts=(ids||[]).map(i=>L.pos[i]).filter(Boo
   const c1=t1.clone().addScaledVector(dir,Math.max(SMALL?8.5:7,span*2.6+5.5));
   if(instant){controls.target.copy(t1);camera.position.copy(c1);controls.update();return}
   fly={t:0,d:1,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
+function toastPartnerConflicts(a,b){
+  const skip=new Set([a+'~'+b,b+'~'+a]);
+  const seen=new Set();
+  const pairs=[];
+  for(const [x,y,kind] of (L.conflicts||[])){if(kind!=='partner')continue;const k=x+'~'+y,rk=y+'~'+x;if(skip.has(k)||skip.has(rk)||seen.has(k)||seen.has(rk))continue;if(x===a||x===b||y===a||y===b){seen.add(k);pairs.push([x,y])}}
+  for(const id of [a,b]){for(const s of spousesOf(id)){if(L.gen[id]==null||L.gen[s]==null||L.gen[id]===L.gen[s])continue;const k=id+'~'+s;if(skip.has(k)||skip.has(s+'~'+id)||seen.has(k)||seen.has(s+'~'+id))continue;seen.add(k);pairs.push([id,s])}}
+  for(const [x,y] of pairs)toast(fullName(P()[x])+' and '+fullName(P()[y])+' are partners, but they sit on different generations because of a parent or sibling link. Check their parents in the details panel.',6000)}
 function afterSiblingLink(a,b,already){clearTimeout(rbT);rebuild();sel=a;applyVisibility();renderList();renderDetails();
   const par=parentsOf(a).filter(x=>parentsOf(b).includes(x)),names=fullName(P()[a])+' and '+fullName(P()[b]);
   const ga=L.gen[a],gb=L.gen[b];
   if(ga!=null&&gb!=null&&ga!==gb)toast(names+' are linked as brother and sister, but they still sit on different generations because of another parent or partner link. Check their parents in the details panel.',6000);
   else toast(already?names+' are already linked as brothers or sisters.':names+' are now linked as brothers or sisters.',4500);
+  toastPartnerConflicts(a,b);
   flyToGroup([a,b,...par])}
+function afterPartnerLink(a,b,already){clearTimeout(rbT);rebuild();sel=a;applyVisibility();renderList();renderDetails();
+  const names=fullName(P()[a])+' and '+fullName(P()[b]);
+  const ga=L.gen[a],gb=L.gen[b];
+  if(ga!=null&&gb!=null&&ga!==gb)toast(names+' are partners, but they sit on different generations because of a parent or sibling link. Check their parents in the details panel.',6000);
+  else toast(already?names+' are already partners.':names+' are now linked as partners.',4500);
+  toastPartnerConflicts(a,b);
+  flyToGroup([a,b])}
 function flyHome(instant){const a=L.pos.mark,b=L.pos.emma;let t1;if(a&&b)t1=a.clone().lerp(b,.5);else if(sel&&L.pos[sel])t1=L.pos[sel].clone();else t1=new THREE.Vector3();
   if(!SMALL)t1.x+=1.4; t1.y+=SMALL?0.8:1.2; const D=17.5*Math.pow(Math.max(1,0.95/camera.aspect),0.6); const c1=t1.clone().add(new THREE.Vector3(-0.53*D,3.4,0.85*D));
   if(instant){controls.target.copy(t1);camera.position.copy(c1);controls.update();return}fly={t:0,d:1.1,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
@@ -585,8 +619,10 @@ function personDialog(act){if(VIEW)return toast(ROMSG);
       <p style="font-size:13px;color:var(--mut)">This only joins two people who are already in the tree; nobody new is created. Use the ✕ next to a parent to undo a sibling link.</p>`,async()=>{
       const rel=$('#lRel').value,o=$('#lWho').value;if(!o||!P()[o])return false;
       if(rel==='spouse'){
-        if(parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
-        await saveRel(s.id,o);await offerKids(s.id,o);await offerKids(o,s.id)}
+        const already=spousesOf(s.id).includes(o);
+        if(!already&&parentsOf(s.id).some(x=>parentsOf(o).includes(x))&&!confirm(fullName(P()[o])+' shares a parent with '+nm+'. Link them as partners anyway?'))return false;
+        if(!already){await saveRel(s.id,o);await offerKids(s.id,o);await offerKids(o,s.id)}
+        afterPartnerLink(s.id,o,already);return true}
       else if(rel==='sibling'){const sr=await linkAsSiblings(s.id,o);if(sr===false)return false;afterSiblingLink(s.id,o,sr==='already');return true}
       else{const child=rel==='child'?o:s.id,parent=rel==='child'?s.id:o;const q=structuredClone(P()[child]);const cur=(q.parents||[]).filter(x=>P()[x]);
         if(cur.includes(parent))return toast('Already linked.'),false;
@@ -815,5 +851,5 @@ $('#bMenu').onclick=()=>{
 };
 addEventListener('keydown',e=>{if(e.key==='Escape'){$('#dlg').classList.remove('open');$('#vX')?.click()}});
 
-window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW},APP_VER,assignGens};
+window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW},APP_VER,assignGens,conflicts:()=>L.conflicts||[]};
 boot();
