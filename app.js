@@ -17,6 +17,7 @@ const years=p=>{const b=yearOf(p.birth),d=yearOf(p.death);if(!b&&!d)return p.dec
 const SMALL=matchMedia('(max-width:860px), (max-height:540px)').matches||matchMedia('(pointer:coarse)').matches;
 const toast=(t,ms=2600)=>{const d=document.createElement('div');d.className='toast';d.textContent=t;document.body.appendChild(d);setTimeout(()=>d.remove(),ms)};
 const params=new URLSearchParams(location.search), DEMO=params.has('demo');
+const APP_VER=(typeof TPT_VERSION==='string'&&TPT_VERSION&&TPT_VERSION.indexOf('_')<0)?TPT_VERSION:'local';
 let store, sel='mark', focusMode=false, yearFilter=null, VIEW=false, publisher=null, pubState='off';
 const GONEMSG='This view-only link has been switched off or the code was changed. Ask for the new viewer code.';
 const ROMSG='This is a view-only copy of the family tree.';
@@ -133,13 +134,30 @@ function aliveIn(p,Y){const b=yearOf(p.birth),d=yearOf(p.death);if(d&&Y>d)return
 
 /* ======================= layout ======================= */
 const SX=2.5,SY=4.4,SZ=2.9,STAG=-0.6,TIER=0.4;  // TIER lifts each sibling further back so faces show over the ones in front
-function layout(){
+// Generations follow blood first (parent / child / siblings), then partners are attached.
+// A spouse or child link must not pin someone to the wrong row once they share a parent with a sibling.
+function assignGens(){
   const ps=P(), ids=Object.keys(ps), gen={};
+  const blood=x=>[...parentsOf(x).map(y=>[y,-1]),...childrenOf(x).map(y=>[y,1])];
+  const fill=(start,g0)=>{if(gen[start]!=null)return;gen[start]=g0;const q=[start];
+    while(q.length){const x=q.shift(),g=gen[x];for(const [y,d] of blood(x))if(gen[y]==null){gen[y]=g+d;q.push(y)}}};
   const roots=[ps.mark?'mark':null,...ids].filter(Boolean);
-  for(const r of roots){ if(gen[r]!=null)continue; gen[r]=0; const q=[r];
-    while(q.length){const x=q.shift(),g=gen[x];
-      const nb=[...parentsOf(x).map(y=>[y,g-1]),...childrenOf(x).map(y=>[y,g+1]),...spousesOf(x).map(y=>[y,g])];
-      for(const [y,gy] of nb)if(gen[y]==null){gen[y]=gy;q.push(y)}}}
+  for(const r of roots)if(gen[r]==null)fill(r,0);
+  let more=true;while(more){more=false;for(const id of ids){if(gen[id]==null)continue;for(const s of spousesOf(id))if(gen[s]==null){fill(s,gen[id]);more=true}}}
+  // If a child ended up on the wrong row (usually reached earlier via a partner), move them and their own partner/descendants under that parent so siblings share a row. Do not drag along in-laws who already belong to the parent's other line.
+  const bloodOf=id=>{const s=new Set([id]),q=[id];while(q.length){const x=q.shift();parentsOf(x).concat(childrenOf(x)).forEach(y=>{if(!s.has(y)){s.add(y);q.push(y)}})}return s};
+  const descs=id=>{const s=new Set(),q=[id];while(q.length){const x=q.shift();if(s.has(x))continue;s.add(x);childrenOf(x).forEach(k=>q.push(k))}return s};
+  let moved=true,guard=0;
+  while(moved&&guard++<12){moved=false;
+    for(const id of ids){if(gen[id]==null)continue;const want=gen[id]+1;
+      for(const c of childrenOf(id)){if(gen[c]==null){gen[c]=want;moved=true;continue}if(gen[c]===want)continue;
+        const frozen=bloodOf(id);descs(c).forEach(x=>frozen.delete(x));
+        const fol=new Set(),stk=[c];while(stk.length){const x=stk.pop();if(fol.has(x)||frozen.has(x))continue;fol.add(x);childrenOf(x).forEach(k=>stk.push(k));spousesOf(x).forEach(k=>stk.push(k))}
+        if(!fol.size||fol.has(id))continue;
+        const delta=want-gen[c];fol.forEach(i=>{if(gen[i]!=null)gen[i]+=delta});moved=true}}}
+  return gen}
+function layout(){
+  const ps=P(), ids=Object.keys(ps), gen=assignGens();
   const pos={}, gens=[...new Set(Object.values(gen))].sort((a,b)=>a-b);
   for(const g of gens){
     const inG=ids.filter(i=>gen[i]===g); const hasPar=i=>parentsOf(i).some(p=>gen[p]===g-1);
@@ -353,7 +371,9 @@ function flyToGroup(ids,instant){const pts=(ids||[]).map(i=>L.pos[i]).filter(Boo
   fly={t:0,d:1,t0:controls.target.clone(),t1,c0:camera.position.clone(),c1}}
 function afterSiblingLink(a,b,already){clearTimeout(rbT);rebuild();sel=a;applyVisibility();renderList();renderDetails();
   const par=parentsOf(a).filter(x=>parentsOf(b).includes(x)),names=fullName(P()[a])+' and '+fullName(P()[b]);
-  toast(already?names+' are already linked as brothers or sisters.':names+' are now linked as brothers or sisters.',4500);
+  const ga=L.gen[a],gb=L.gen[b];
+  if(ga!=null&&gb!=null&&ga!==gb)toast(names+' are linked as brother and sister, but they still sit on different generations because of another parent or partner link. Check their parents in the details panel.',6000);
+  else toast(already?names+' are already linked as brothers or sisters.':names+' are now linked as brothers or sisters.',4500);
   flyToGroup([a,b,...par])}
 function flyHome(instant){const a=L.pos.mark,b=L.pos.emma;let t1;if(a&&b)t1=a.clone().lerp(b,.5);else if(sel&&L.pos[sel])t1=L.pos[sel].clone();else t1=new THREE.Vector3();
   if(!SMALL)t1.x+=1.4; t1.y+=SMALL?0.8:1.2; const D=17.5*Math.pow(Math.max(1,0.95/camera.aspect),0.6); const c1=t1.clone().add(new THREE.Vector3(-0.53*D,3.4,0.85*D));
@@ -776,7 +796,8 @@ function shareDialog(mode){
 $('#bMenu').onclick=()=>{
   const bytes=Object.values(M()).reduce((s,m)=>s+(m.size||0)*1.34+(m.thumb?.length||0),0);
   if(VIEW){dlg(`<h2>More</h2><p>${ROMSG} Ask the family tree's owner if something needs changing.</p><div class="pick">
-   <button class="b" id="mLock">🔒 Forget the viewer code on this device</button></div>`,()=>true,{saveLabel:'Done'});
+   <button class="b" id="mLock">🔒 Forget the viewer code on this device</button></div>
+   <p style="font-size:13px;color:var(--mut);margin-top:12px">App version ${esc(APP_VER)}</p>`,()=>true,{saveLabel:'Done'});
    $('#mLock').onclick=()=>{if(confirm('Forget the viewer code on this device?')){localStorage.removeItem('tpt:view');location.reload()}};return}
   dlg(`<h2>More</h2><div class="pick">
    <button class="b" id="mShare">👁 Share view-only (for family)</button>
@@ -786,12 +807,13 @@ $('#bMenu').onclick=()=>{
    <button class="b" id="mJsonIn">⬆ Restore a backup</button>
    <button class="b" id="mLock">🔒 Lock this device (asks for the passcode next time)</button></div>
    <p style="font-size:14px;color:var(--mut);margin-top:12px">${Object.keys(P()).length} people · ${Object.keys(M()).length} photos/documents · about ${(bytes/1048576).toFixed(1)} MB of the 1 GB free cloud space.<br>
-   Status: ${esc($('#status').textContent)}${store.pendingCount()?` · ${store.pendingCount()} change(s) waiting to upload`:''}</p>`,()=>true,{saveLabel:'Done'});
+   Status: ${esc($('#status').textContent)}${store.pendingCount()?` · ${store.pendingCount()} change(s) waiting to upload`:''}<br>
+   App version ${esc(APP_VER)}</p>`,()=>true,{saveLabel:'Done'});
   $('#mShare').onclick=()=>shareDialog();$('#mGed').onclick=exportGedcom;$('#mJson').onclick=exportJSON;
   $('#mGedIn').onclick=()=>pickFile('.ged,text/plain',importGedcom);$('#mJsonIn').onclick=()=>pickFile('.json,application/json',importJSON);
   $('#mLock').onclick=()=>{if(DEMO)return toast('Demo mode has no passcode.');if(confirm('Lock this device? You will need the family passcode to open the tree again. Nothing is deleted.')){localStorage.removeItem('tpt:room');location.reload()}};
 };
 addEventListener('keydown',e=>{if(e.key==='Escape'){$('#dlg').classList.remove('open');$('#vX')?.click()}});
 
-window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW}};
+window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW},APP_VER,assignGens};
 boot();
