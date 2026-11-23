@@ -862,8 +862,10 @@ const REPAIR_DATES={
   robert:{death:'23 Feb 2022',deathPlace:'Walton-on-the-Naze, Essex (Colchester Hospital)'},
   jean:{death:'2 Aug 2007',deathPlace:'Luton'},
   samuel:{birth:'15 Oct 1897',birthPlace:'Luton',death:'6 Jan 1988',deathPlace:'Luton'},
-  may:{birth:'21 Jul 1897',birthPlace:'Luton',death:'Oct 1974',deathPlace:'Luton'}
+  may:{birth:'21 Jul 1897',birthPlace:'Luton',death:'Oct 1974',deathPlace:'Luton'},
+  beryl:{birth:'1927'},derek:{birth:'1927'},kath:{birth:'1930'},vera:{birth:'1934'}
 };
+const SIBLING_OF_JEAN_NOTE='Recorded as a sibling of Jean E Farr. Source: Ancestry "Turner Family Tree" 169957621, read 23 Nov 2026.';
 const GIVEN_ALIASES={derek:['derek','derrick'],derrick:['derek','derrick'],kath:['kath','kathleen'],kathleen:['kath','kathleen'],fredrick:['fredrick','frederick'],frederick:['fredrick','frederick']};
 function firstAliases(p){const f=firstN(p);return new Set([f,...(GIVEN_ALIASES[f]||[])])}
 function givenMatchesSpec(p,given){const accept=[].concat(given).map(s=>normN(s)).filter(Boolean);const pf=firstAliases(p);for(const a of accept){const af=a.split(/\s+/)[0];if(pf.has(af)||(GIVEN_ALIASES[af]||[]).some(x=>pf.has(x)))return true}return false}
@@ -920,9 +922,10 @@ function planFillFields(plan,spec,label,fields){
   if(fill.death||fill.deathPlace)fill.deceased=true;
   plan.actions.push({kind:'fill',id:m.id,fields:fill,text:'Fill blank '+filled.join('; ')+' for '+describePerson(m.person)})
 }
-function planAddNote(plan,spec,label,note,what){
+function planAddNote(plan,spec,label,note,what,alreadyRe){
   const m=matchOrSkip(plan,spec,label);if(!m)return;
-  if(String(m.person.notes||'').includes(note)){plan.already.push(what+' already on '+describePerson(m.person)+'.');return}
+  const notes=String(m.person.notes||'');
+  if(notes.includes(note)||(alreadyRe&&alreadyRe.test(notes))){plan.already.push(what+' already on '+describePerson(m.person)+'.');return}
   plan.actions.push({kind:'note',id:m.id,note,text:'Add '+what+' to '+describePerson(m.person)})
 }
 function planPartnerBothWays(plan,aSpec,aLabel,bSpec,bLabel){
@@ -933,7 +936,7 @@ function planPartnerBothWays(plan,aSpec,aLabel,bSpec,bLabel){
 }
 function planMerge(plan,srcSpec,srcLabel,dstSpec,dstLabel){
   const src=findBySpec(srcSpec),dst=findBySpec(dstSpec);
-  if(src.missing&&dst.ok){plan.already.push(srcLabel+' is not on the tree — already merged into '+describePerson(dst.person)+', or was never added.');return}
+  if(src.missing&&dst.ok){plan.already.push(srcLabel+' is not on the tree (already removed). '+describePerson(dst.person)+' will be checked for blank dates and notes separately.');return}
   if(src.missing&&dst.missing){plan.already.push(srcLabel+' and '+dstLabel+' are not on the tree (nothing to merge).');return}
   if(src.ambiguous){plan.skipped.push('Skipped merging '+srcLabel+': '+src.ambiguous.length+' people match ('+src.ambiguous.map(describePerson).join(', ')+').');return}
   if(dst.ambiguous){plan.skipped.push('Skipped merging '+srcLabel+': '+dst.ambiguous.length+' people match '+dstLabel+' ('+dst.ambiguous.map(describePerson).join(', ')+').');return}
@@ -976,6 +979,16 @@ function planAncestryRepair(){
   planMerge(plan,{given:['Derrick Charles','Derrick'],emptySurname:true,year:1927,yearRequired:true},'unsurnamed Derrick Charles (b. 1927)',{given:['Derek','Derrick'],surname:'Farr'},'Derek Farr');
   planMerge(plan,{given:['Kathleen','Kath'],emptySurname:true,year:1930,yearRequired:true},'unsurnamed Kathleen (b. 1930)',{given:['Kath','Kathleen'],surname:'Farr'},'Kath Farr');
   planMerge(plan,{given:'Vera',emptySurname:true,year:1934,yearRequired:true},'unsurnamed Vera (b. 1934)',{given:'Vera',surname:'Farr'},'Vera Farr');
+  const FARR_SIBS=[
+    [{given:'Beryl',surname:'Farr'},'Beryl Farr',REPAIR_DATES.beryl],
+    [{given:['Derek','Derrick'],surname:'Farr'},'Derek Farr',REPAIR_DATES.derek],
+    [{given:['Kath','Kathleen'],surname:'Farr'},'Kath Farr',REPAIR_DATES.kath],
+    [{given:'Vera',surname:'Farr'},'Vera Farr',REPAIR_DATES.vera]
+  ];
+  for(const [spec,label,fields] of FARR_SIBS){
+    planFillFields(plan,spec,label,fields);
+    planAddNote(plan,spec,label,SIBLING_OF_JEAN_NOTE,'the short sibling-of-Jean note',/sibling of Jean/i);
+  }
   const ta=findBySpec({given:'Thomas Albert',emptySurname:true,year:1925,yearRequired:false});
   if(ta.ok)plan.info.push('Thomas Albert\'s surname was left as it is (the GEDCOM does not give a surname).');
   else if(ta.ambiguous)plan.skipped.push('Thomas Albert was left unchanged: more than one person matches that name.');
@@ -991,9 +1004,31 @@ function planAncestryRepair(){
   return plan
 }
 async function applyAncestryRepair(actions){
-  const applied=[],skipped=[],dirty={},mediaDirty={};
+  const applied=[],skipped=[],failed=[];
+  const dirty={}; const mediaDirty={};
   const get=id=>{if(!id)return null;if(dirty[id]&&dirty[id]._deleted)return null;if(!dirty[id]){const p=P()[id];if(!p)return null;dirty[id]=structuredClone(p)}return dirty[id]};
   const live=id=>get(id)||P()[id];
+  async function persist(id){
+    const p=dirty[id]; if(!p||p._deleted)return true;
+    const cur=P()[id];
+    try{
+      // Always write, then keep a fresh clone in dirty so a later step on the same
+      // person is not skipped because store.put left P()[id] pointing at the same object.
+      await store.put('persons',p.id,p);
+      dirty[id]=structuredClone(P()[id]||p);
+      return true;
+    }catch(e){console.error('repair write',id,e);failed.push('Could not save changes to '+(cur?describePerson(p):id)+' ('+(e.message||e)+').');return false}
+  }
+  async function persistMedia(){
+    for(const [mid,m] of Object.entries(mediaDirty)){
+      try{await store.put('media',mid,m)}catch(e){console.error('repair media',mid,e);failed.push('Could not update a photo or document after a merge ('+(e.message||e)+').')}
+    }
+  }
+  async function persistDel(id){
+    const p=dirty[id]; if(!p||!p._deleted)return true;
+    try{if(P()[id])await store.del('persons',id);return true}
+    catch(e){console.error('repair del',id,e);failed.push('Could not remove a merged duplicate ('+(e.message||e)+').');return false}
+  }
   for(const act of actions){
     try{
       if(act.kind==='parents'){
@@ -1008,21 +1043,24 @@ async function applyAncestryRepair(actions){
           else if(ph){cur[cur.indexOf(ph)]=gp;changed=true}
           else{skipped.push('Could not add a parent to '+describePerson(t)+' — they already have two parents.');changed=false;break}
         }
-        if(changed){t.parents=[...new Set(cur)].slice(0,2);applied.push(act.text)}
+        if(changed){t.parents=[...new Set(cur)].slice(0,2);if(await persist(t.id))applied.push(act.text);else skipped.push(act.text+' — not saved.')}
         else if(!act.parents.every(id=>cur.includes(id))){/* skipped already recorded */}
         else applied.push(act.text+' (already in place)')
       }else if(act.kind==='partner'){
         const a=get(act.a),b=get(act.b);if(!a||!b){skipped.push(act.text+' — person no longer found.');continue}
         a.spouses=[...new Set([...(a.spouses||[]),b.id])];b.spouses=[...new Set([...(b.spouses||[]),a.id])];
-        applied.push(act.text)
+        const ok=(await persist(a.id))&(await persist(b.id));
+        if(ok)applied.push(act.text);else skipped.push(act.text+' — not fully saved.')
       }else if(act.kind==='fill'){
         const t=get(act.id);if(!t){skipped.push(act.text+' — person no longer found.');continue}
         let n=0;for(const [k,v] of Object.entries(act.fields)){if(k==='deceased'){if(v){t.deceased=true;n++}continue}if(!t[k]&&v){t[k]=v;n++}}
-        if(n)applied.push(act.text);else skipped.push(act.text+' — fields were no longer blank, nothing overwritten.')
+        if(!n){skipped.push(act.text+' — fields were no longer blank, nothing overwritten.');continue}
+        if(await persist(t.id))applied.push(act.text);else skipped.push(act.text+' — not saved.')
       }else if(act.kind==='note'){
         const t=get(act.id);if(!t){skipped.push(act.text+' — person no longer found.');continue}
-        if(String(t.notes||'').includes(act.note)){applied.push(act.text+' (already present)');continue}
-        absorbNotes(t,act.note);applied.push(act.text)
+        if(String(t.notes||'').includes(act.note)||/sibling of Jean/i.test(String(t.notes||''))&&/sibling of Jean/i.test(act.note)){applied.push(act.text+' (already present)');continue}
+        absorbNotes(t,act.note);
+        if(await persist(t.id))applied.push(act.text);else skipped.push(act.text+' — not saved.')
       }else if(act.kind==='merge'){
         const src=get(act.src),dst=get(act.dst);
         if(!src){skipped.push(act.text+' — the unsurnamed person is no longer on the tree.');continue}
@@ -1043,32 +1081,29 @@ async function applyAncestryRepair(actions){
         for(const mid of [...(src.photos||[]),...(src.docs||[]),src.video,src.portrait].filter(Boolean)){
           const m=M()[mid];if(m){const q=structuredClone(mediaDirty[mid]||m);q.person=dst.id;mediaDirty[mid]=q}
         }
+        const touched=[dst.id];
         for(const p of Object.values(P())){
           if(p.id===src.id||p.id===dst.id)continue;
+          if(!((p.parents||[]).includes(src.id)||(p.spouses||[]).includes(src.id)))continue;
           const q=get(p.id);if(!q||q._deleted)continue;
-          let ch=false;
-          if((q.parents||[]).includes(src.id)){q.parents=[...new Set((q.parents||[]).map(id=>id===src.id?dst.id:id))];ch=true}
+          if((q.parents||[]).includes(src.id))q.parents=[...new Set((q.parents||[]).map(id=>id===src.id?dst.id:id))];
           if((q.spouses||[]).includes(src.id)){
             q.spouses=[...new Set((q.spouses||[]).map(id=>id===src.id?dst.id:id))].filter(id=>id!==q.id);
             if(q.marr&&q.marr[src.id]&&!q.marr[dst.id])q.marr[dst.id]=q.marr[src.id];
             if(q.rel&&q.rel[src.id]&&!q.rel[dst.id])q.rel[dst.id]=q.rel[src.id];
-            if(q.marr)delete q.marr[src.id];if(q.rel)delete q.rel[src.id];ch=true}
-          void ch
+            if(q.marr)delete q.marr[src.id];if(q.rel)delete q.rel[src.id]}
+          touched.push(q.id)
         }
         src._deleted=true;
-        applied.push(act.text)
+        let ok=true;
+        for(const id of touched){if(!await persist(id))ok=false}
+        await persistMedia();
+        if(!await persistDel(src.id))ok=false;
+        if(ok)applied.push(act.text);else skipped.push(act.text+' — not fully saved.')
       }
-    }catch(e){console.error('repair',act,e);skipped.push(act.text+' — something went wrong and this change was not applied.')}
+    }catch(e){console.error('repair',act,e);failed.push(act.text+' — something went wrong and this change was not applied ('+(e.message||e)+').')}
   }
-  const seen=new Set();
-  for(const p of Object.values(dirty)){
-    if(!p||p._deleted||seen.has(p.id))continue;seen.add(p.id);
-    delete p._deleted;
-    if(JSON.stringify(p)!==JSON.stringify(P()[p.id]))await store.put('persons',p.id,p)
-  }
-  for(const [mid,m] of Object.entries(mediaDirty))await store.put('media',mid,m);
-  for(const p of Object.values(dirty)){if(p&&p._deleted)await store.del('persons',p.id)}
-  return{applied,skipped}
+  return{applied,skipped,failed}
 }
 function listHtml(title,items,empty){if(!items.length)return empty?'':`<p style="font-size:14px;color:var(--mut)">${esc(empty)}</p>`;
   return `<p style="margin:12px 0 4px"><b>${esc(title)}</b></p><ul style="margin:0;padding-left:1.2em;font-size:14px">${items.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>`}
@@ -1092,12 +1127,15 @@ async function openAncestryRepair(){
         toast('Downloading a full backup first…',4000);
         await exportJSON();
       }catch(e){console.error(e);toast('The backup could not be downloaded. Nothing was changed.');return false}
-      const r=await applyAncestryRepair(plan.actions);
+      let r;
+      try{r=await applyAncestryRepair(plan.actions)}
+      catch(e){console.error(e);r={applied:[],skipped:[],failed:['The repair stopped unexpectedly ('+(e.message||e)+'). Any changes listed below were saved before that.']}}
+      r.failed=r.failed||[];
       const pending=store.pendingCount?store.pendingCount():0;
-      toast(r.applied.length?`Repair applied: ${r.applied.length} change(s).`:'Repair finished with no changes.',5000);
-      setTimeout(()=>dlg(`<h2>Repair finished</h2>
-        ${listHtml('Applied',r.applied)}${listHtml('Skipped',r.skipped)}
-        <p style="font-size:14px;color:var(--mut);margin-top:12px">${pending?'Stay on this page until the status line shows the changes have uploaded, so an older copy on another device cannot overwrite them.':'Changes are saved on this device'+(store.firebase&&store.firebase()?' and are being copied to the cloud.':' (demo or local only).')}</p>`,()=>true,{saveLabel:'Done'}),0);
+      toast(r.failed.length?`Repair finished with ${r.failed.length} save problem(s).`:(r.applied.length?`Repair applied: ${r.applied.length} change(s).`:'Repair finished with no changes.'),6000);
+      setTimeout(()=>dlg(`<h2>${r.failed.length?'Repair finished with problems':'Repair finished'}</h2>
+        ${listHtml('Applied',r.applied)}${listHtml('Skipped',r.skipped)}${listHtml('Could not save',r.failed)}
+        <p style="font-size:14px;color:var(--mut);margin-top:12px">${pending?'Stay on this page until the status line shows the changes have uploaded, so an older copy on another device cannot overwrite them.':'Changes are saved on this device'+(store.firebase&&store.firebase()?' and are being copied to the cloud.':' (demo or local only).')}${r.failed.length?' Please stay on this page and try the repair once more if some changes are missing.':''}</p>`,()=>true,{saveLabel:'Done'}),0);
       return true
     },{saveLabel:'Download backup and apply'});
   return plan
