@@ -768,13 +768,14 @@ async function importGedcom(file){if(VIEW)return toast(ROMSG);
   dlg(`<h2>Import "${esc(file.name)}"</h2>
     <p>Found <b>${people.length}</b> people and <b>${fams.size}</b> families. <b>${dn}</b> look like people already in the tree (same name and birth year).</p>
     ${dn?`<div style="max-height:40vh;overflow:auto"><table style="width:100%;font-size:14px;border-collapse:collapse"><tr><th align="left">In the file</th><th align="left">Already in the tree</th><th></th></tr>${people.filter(q=>dups[q.id]).map(row).join('')}</table></div>
-     <p style="font-size:13px;color:var(--mut)">"Link" keeps the existing person (their photos, existing notes and links stay as they are), fills in any blank dates or places, adds any new conflict or uncertainty notes, and joins them to their relatives from the file. "Skip" leaves them and their links out.</p>`:''}
+     <p style="font-size:13px;color:var(--mut)">"Link" keeps the existing person (their photos, existing notes and links stay as they are), fills in any blank dates or places, adds any new conflict or uncertainty notes, and joins them to their relatives from the file. "Skip" leaves that person out, and also leaves out any parent, partner or child links from the file that involve them — even if the other relative is imported or already in the tree.</p>`:''}
     <p style="font-size:13px;color:var(--mut)">Nothing already in the tree is deleted or overwritten. No photos are imported. Tip: download a backup first (More → Download full backup).</p>`,
     async()=>{const choice={};$$('[data-dup]').forEach(s=>choice[s.dataset.dup]=s.value);const r=await mergeGedcom(people,dups,choice);
-      toast(`Imported: ${r.added} added, ${r.linked} linked to existing people${r.skipped?`, ${r.skipped} skipped`:''}${r.conflicts?`. ${r.conflicts} parent link(s) left out because that person already has two parents`:''}.`,6000)},{saveLabel:'Import'});
+      toast(`Imported: ${r.added} added, ${r.linked} linked to existing people${r.skipped?`, ${r.skipped} skipped`:''}${r.conflicts?`. ${r.conflicts} parent link(s) left out because that person already has two parents`:''}.`,6000);
+      if(r.unapplied&&r.unapplied.length)setTimeout(()=>showUnappliedLinks(r.unapplied),0)},{saveLabel:'Import'});
 }
 async function mergeGedcom(people,dups,choice){
-  const idmap={},out={},stat={added:0,linked:0,skipped:0,conflicts:0};
+  const idmap={},out={},stat={added:0,linked:0,skipped:0,conflicts:0,unapplied:[]};
   const get=id=>out[id]||(out[id]=structuredClone(P()[id]));
   for(const q of people){const c=dups[q.id]?(choice[q.id]||'link'):'add';
     if(c==='skip'){idmap[q.id]=null;stat.skipped++}
@@ -783,11 +784,23 @@ async function mergeGedcom(people,dups,choice){
       absorbNotes(t,q.notes)}
     else{idmap[q.id]=q.id;stat.added++;const n=blank({given:q.given,surname:q.surname,sex:q.sex,birth:q.birth,birthPlace:q.birthPlace,death:q.death,deathPlace:q.deathPlace,deceased:q.deceased,notes:q.notes,unknown:q.unknown});n.id=q.id;delete n.unknown;if(q.unknown)n.unknown=true;out[n.id]=n}}
   const map=x=>idmap[x];
-  for(const q of people){const me=map(q.id);if(!me)continue;const t=get(me);
-    // parents: keep existing ones, add missing ones (max two; a placeholder "unknown" parent is replaced)
-    for(const gp of q.parents.map(map).filter(Boolean)){const cur=(t.parents||[]).filter(i=>out[i]||P()[i]);if(cur.includes(gp)||gp===me)continue;
-      const ph=cur.find(i=>(out[i]||P()[i]).unknown);if(cur.length<2)t.parents=[...cur,gp];else if(ph)t.parents=[...cur.filter(i=>i!==ph),gp];else stat.conflicts++}
-    for(const gs of q.spouses){const sp=map(gs);if(!sp||sp===me)continue;t.spouses=[...new Set([...(t.spouses||[]),sp])];
+  const byImp=Object.fromEntries(people.map(q=>[q.id,q]));
+  const nm=id=>{const t=id&&(out[id]||P()[id]);return t?fullName(t):''};
+  const note=s=>{if(s&&!stat.unapplied.includes(s))stat.unapplied.push(s)};
+  for(const q of people){const me=map(q.id);
+    for(const gp of q.parents){const parent=map(gp);
+      if(!me&&parent){note(`Parent link not applied: ${fullName(q)} was skipped, so they were not linked to ${nm(parent)}.`);continue}
+      if(me&&!parent&&idmap[gp]===null){note(`Parent link not applied: ${fullName(byImp[gp]||{given:'this parent'})} was skipped, so they were not added as a parent of ${nm(me)}.`);continue}
+      if(!me||!parent)continue;
+      const t=get(me);const cur=(t.parents||[]).filter(i=>out[i]||P()[i]);if(cur.includes(parent)||parent===me)continue;
+      const ph=cur.find(i=>(out[i]||P()[i]).unknown);if(cur.length<2)t.parents=[...cur,parent];
+      else if(ph)t.parents=[...cur.filter(i=>i!==ph),parent];
+      else{stat.conflicts++;note(`Parent link not applied: ${nm(me)} already has two parents, so ${nm(parent)} was not added.`)}}
+    if(!me){for(const gs of q.spouses){const sp=map(gs);if(sp)note(`Partner link not applied: ${fullName(q)} was skipped, so they were not linked as a partner of ${nm(sp)}.`)}continue}
+    const t=get(me);
+    for(const gs of q.spouses){const sp=map(gs);
+      if(!sp){if(idmap[gs]===null)note(`Partner link not applied: ${fullName(byImp[gs]||{given:'this partner'})} was skipped, so they were not linked as a partner of ${nm(me)}.`);continue}
+      if(sp===me)continue;t.spouses=[...new Set([...(t.spouses||[]),sp])];
       if(q.marr?.[gs]){if(!t.marr?.[sp])t.marr={...(t.marr||{}),[sp]:q.marr[gs]};
         else if(/conflict|uncertain/i.test(q.marr[gs])&&!/conflict|uncertain/i.test(t.marr[sp]))absorbNotes(t,q.marr[gs])}
       if(q.rel?.[gs]&&!t.rel?.[sp])t.rel={...(t.rel||{}),[sp]:q.rel[gs]}}}
@@ -842,6 +855,254 @@ function shareDialog(mode){
   $('#scStop').onclick=async()=>{if(!confirm('Stop sharing? Everyone with the viewer code loses access straight away. You can share again later with a new code.'))return;
     const old=sh.viewKey;await store.put('config','share',{on:false,viewKey:null,portraits});publisher.wipe(old).catch(e=>console.warn('wipe view',e));toast('Sharing stopped.');$('#dlg').classList.remove('open')};
 }
+/* ======================= one-click ancestry repair (Nov 2026 import) ======================= */
+const WEDDING_CONFLICT_NOTE='Conflict: the Ancestry tree records Robert and Jean\'s wedding as Jan 1959, Luton; Mark\'s family report records it as 7 Mar 1959. Neither date has been chosen.';
+const MAY_FATHER_NOTE='Uncertain: the Ancestry tree lists Arthur Summerfield as May Stokes\'s father, but he married Rose L Rickard in 1906. May\'s mother Jane Stokes married William Finch in 1901. This is recorded as the tree has it and is marked uncertain; the father has not been decided. Source: Ancestry "Turner Family Tree" 169957621, read 23 Nov 2026.';
+const REPAIR_DATES={
+  robert:{death:'23 Feb 2022',deathPlace:'Walton-on-the-Naze, Essex (Colchester Hospital)'},
+  jean:{death:'2 Aug 2007',deathPlace:'Luton'},
+  samuel:{birth:'15 Oct 1897',birthPlace:'Luton',death:'6 Jan 1988',deathPlace:'Luton'},
+  may:{birth:'21 Jul 1897',birthPlace:'Luton',death:'Oct 1974',deathPlace:'Luton'}
+};
+const GIVEN_ALIASES={derek:['derek','derrick'],derrick:['derek','derrick'],kath:['kath','kathleen'],kathleen:['kath','kathleen'],fredrick:['fredrick','frederick'],frederick:['fredrick','frederick']};
+function firstAliases(p){const f=firstN(p);return new Set([f,...(GIVEN_ALIASES[f]||[])])}
+function givenMatchesSpec(p,given){const accept=[].concat(given).map(s=>normN(s)).filter(Boolean);const pf=firstAliases(p);for(const a of accept){const af=a.split(/\s+/)[0];if(pf.has(af)||(GIVEN_ALIASES[af]||[]).some(x=>pf.has(x)))return true}return false}
+function surnameMatchesSpec(p,spec){const ps=normN(p.surname);if(spec.emptySurname)return!ps;if(spec.surname==null)return true;if(spec.surnameOptional&&!ps)return true;return ps===normN(spec.surname)}
+function yearMatchesSpec(p,spec){if(spec.year==null)return true;const y=yearOf(p.birth);if(y==null)return!spec.yearRequired;return Math.abs(y-spec.year)<=1}
+function describePerson(p){if(!p)return'(missing)';const y=yearOf(p.birth);return fullName(p)+(y?' (b. '+y+')':'')}
+function findBySpec(spec){
+  const cands=Object.values(P()).filter(p=>!p.unknown&&givenMatchesSpec(p,spec.given)&&surnameMatchesSpec(p,spec)&&yearMatchesSpec(p,spec));
+  if(cands.length===1)return{ok:true,id:cands[0].id,person:cands[0]};
+  if(cands.length===0)return{missing:true};
+  if(spec.year!=null){const exact=cands.filter(p=>{const y=yearOf(p.birth);return y!=null&&Math.abs(y-spec.year)<=1});
+    if(exact.length===1)return{ok:true,id:exact[0].id,person:exact[0]};
+    if(exact.length>1)return{ambiguous:exact}}
+  return{ambiguous:cands}
+}
+function matchOrSkip(plan,spec,label){
+  const r=findBySpec(spec);
+  if(r.ok)return r;
+  if(r.missing)plan.skipped.push('Could not find '+label+' — no change made.');
+  else plan.skipped.push('Skipped '+label+': '+r.ambiguous.length+' people match that name'+(spec.year?' and year':'')+' ('+r.ambiguous.map(describePerson).join(', ')+'). Nothing was changed.');
+  return null
+}
+function isWilliamFinch(p){return!!p&&normN(p.surname)==='finch'&&firstN(p)==='william'}
+function planParentLink(plan,childSpec,childLabel,parents){
+  const child=matchOrSkip(plan,childSpec,childLabel);if(!child)return;
+  const resolved=[];
+  for(const [spec,label] of parents){const m=matchOrSkip(plan,spec,label);if(m)resolved.push({...m,label})}
+  if(resolved.length!==parents.length)return;
+  const cur=(child.person.parents||[]).filter(id=>P()[id]);
+  const want=resolved.map(r=>r.id);
+  if(want.every(id=>cur.includes(id))){plan.already.push(resolved.map(r=>r.label).join(' and ')+' already listed as parents of '+describePerson(child.person)+'.');return}
+  const next=[...cur];const added=[];
+  for(const r of resolved){
+    if(isWilliamFinch(r.person)){plan.skipped.push('William Finch was not added as a parent of '+describePerson(child.person)+'.');continue}
+    if(next.includes(r.id))continue;
+    const ph=next.find(id=>P()[id]&&P()[id].unknown);
+    if(next.length<2){next.push(r.id);added.push(r)}
+    else if(ph){next[next.indexOf(ph)]=r.id;added.push(r)}
+    else{plan.skipped.push('Could not add '+r.label+' as a parent of '+describePerson(child.person)+' — they already have two parents ('+cur.map(id=>describePerson(P()[id])).join(', ')+').')}
+  }
+  if(!added.length){if(!resolved.some(r=>cur.includes(r.id))){/* skipped or already recorded */}else plan.already.push('Parents of '+describePerson(child.person)+' are already in place.');return}
+  const already=resolved.filter(r=>cur.includes(r.id));
+  let text='Link '+added.map(r=>describePerson(r.person)).join(' and ')+' as parent'+(added.length>1?'s':'')+' of '+describePerson(child.person);
+  if(already.length)text+=' ('+already.map(r=>r.label).join(' and ')+' already linked)';
+  plan.actions.push({kind:'parents',child:child.id,parents:want.filter(id=>!isWilliamFinch(P()[id])),text})
+}
+function planFillFields(plan,spec,label,fields){
+  const m=matchOrSkip(plan,spec,label);if(!m)return;
+  const fill={};const filled=[];
+  for(const [k,v] of Object.entries(fields)){if(!v)continue;if(!m.person[k]){fill[k]=v;filled.push(k.replace(/([A-Z])/g,' $1').toLowerCase()+' "'+v+'"')}
+    else if(m.person[k]===v){/* already the same */}
+    else plan.already.push(label+': existing '+k.replace(/([A-Z])/g,' $1').toLowerCase()+' kept ("'+m.person[k]+'"), not overwritten.')}
+  if(!filled.length){plan.already.push('Dates for '+describePerson(m.person)+' are already filled (nothing overwritten).');return}
+  if(fill.death||fill.deathPlace)fill.deceased=true;
+  plan.actions.push({kind:'fill',id:m.id,fields:fill,text:'Fill blank '+filled.join('; ')+' for '+describePerson(m.person)})
+}
+function planAddNote(plan,spec,label,note,what){
+  const m=matchOrSkip(plan,spec,label);if(!m)return;
+  if(String(m.person.notes||'').includes(note)){plan.already.push(what+' already on '+describePerson(m.person)+'.');return}
+  plan.actions.push({kind:'note',id:m.id,note,text:'Add '+what+' to '+describePerson(m.person)})
+}
+function planPartnerBothWays(plan,aSpec,aLabel,bSpec,bLabel){
+  const a=matchOrSkip(plan,aSpec,aLabel),b=matchOrSkip(plan,bSpec,bLabel);if(!a||!b)return;
+  const aHas=(a.person.spouses||[]).includes(b.id),bHas=(b.person.spouses||[]).includes(a.id);
+  if(aHas&&bHas){plan.already.push(describePerson(a.person)+' and '+describePerson(b.person)+' are already partners both ways.');return}
+  plan.actions.push({kind:'partner',a:a.id,b:b.id,text:'Make '+describePerson(a.person)+' and '+describePerson(b.person)+' partners both ways'+(aHas||bHas?' (the link is only one-way at the moment)':'')})
+}
+function planMerge(plan,srcSpec,srcLabel,dstSpec,dstLabel){
+  const src=findBySpec(srcSpec),dst=findBySpec(dstSpec);
+  if(src.missing&&dst.ok){plan.already.push(srcLabel+' is not on the tree — already merged into '+describePerson(dst.person)+', or was never added.');return}
+  if(src.missing&&dst.missing){plan.already.push(srcLabel+' and '+dstLabel+' are not on the tree (nothing to merge).');return}
+  if(src.ambiguous){plan.skipped.push('Skipped merging '+srcLabel+': '+src.ambiguous.length+' people match ('+src.ambiguous.map(describePerson).join(', ')+').');return}
+  if(dst.ambiguous){plan.skipped.push('Skipped merging '+srcLabel+': '+dst.ambiguous.length+' people match '+dstLabel+' ('+dst.ambiguous.map(describePerson).join(', ')+').');return}
+  if(src.ok&&dst.missing){plan.skipped.push('Skipped merging '+srcLabel+': could not find '+dstLabel+' to merge into.');return}
+  if(!src.ok||!dst.ok)return;
+  if(src.id===dst.id){plan.already.push(srcLabel+' is already the same person as '+dstLabel+'.');return}
+  plan.actions.push({kind:'merge',src:src.id,dst:dst.id,text:'Merge unsurnamed '+describePerson(src.person)+' into '+describePerson(dst.person)+' (keep the name '+fullName(dst.person)+'; fill blank dates only; move links, notes and photos)'})
+}
+function planAncestryRepair(){
+  const plan={actions:[],already:[],skipped:[],info:[]};
+  const S={
+    horace:{given:'Horace Edward',surname:'Turner',year:1879,yearRequired:true},
+    abraham:{given:'Abraham',surname:'Turner',year:1856,yearRequired:true},
+    askew:{given:'Elizabeth Knight',surname:'Askew',year:1847,yearRequired:true},
+    gertrude:{given:'Gertrude',surname:'Bird',year:1880,yearRequired:true},
+    williamBird:{given:'William',surname:'Bird',year:1857,yearRequired:true},
+    elizaAndrews:{given:'Eliza',surname:'Andrews',year:1855,yearRequired:true},
+    thomasArthur:{given:'Thomas Arthur',surname:'Cross',year:1884,yearRequired:true},
+    thomasCross:{given:'Thomas',surname:'Cross',year:1840,yearRequired:true},
+    elizaGinger:{given:'Eliza',surname:'Ginger',year:1846,yearRequired:true},
+    janePunter:{given:'Jane',surname:'Punter',year:1875,yearRequired:true},
+    josephPunter:{given:'Joseph',surname:'Punter',year:1842,yearRequired:true},
+    elizabethScales:{given:'Elizabeth',surname:'Scales',year:1844,yearRequired:true},
+    samuel:{given:'Samuel Thomas',surname:'Farr'},
+    fredrick:{given:['Fredrick','Frederick'],surname:'Farr',year:1855,yearRequired:true},
+    maryAnn:{given:'Mary Ann',surname:'Underwood',year:1858,yearRequired:true},
+    may:{given:'May',surname:'Stokes'},
+    arthur:{given:'Arthur',surname:'Summerfield',year:1882,yearRequired:true},
+    janeStokes:{given:'Jane',surname:'Stokes',year:1878,yearRequired:true},
+    robert:{given:'Robert',surname:'Turner',year:1936,yearRequired:true},
+    jean:{given:['Jean Eileen','Jean E','Jean'],surname:'Farr',year:1936,yearRequired:true}
+  };
+  planParentLink(plan,S.horace,'Horace Edward Turner',[ [S.abraham,'Abraham Turner (b. 1856)'], [S.askew,'Elizabeth Knight Askew (b. 1847)'] ]);
+  planParentLink(plan,S.gertrude,'Gertrude Bird',[ [S.williamBird,'William Bird (b. 1857)'], [S.elizaAndrews,'Eliza Andrews (b. 1855)'] ]);
+  planParentLink(plan,S.thomasArthur,'Thomas Arthur Cross',[ [S.thomasCross,'Thomas Cross (b. 1840)'], [S.elizaGinger,'Eliza Ginger (b. 1846)'] ]);
+  planParentLink(plan,S.janePunter,'Jane Punter',[ [S.josephPunter,'Joseph Punter (b. 1842)'], [S.elizabethScales,'Elizabeth Scales (b. 1844)'] ]);
+  planParentLink(plan,S.samuel,'Samuel Thomas Farr',[ [S.fredrick,'Fredrick Farr (b. 1855)'], [S.maryAnn,'Mary Ann Underwood (b. 1858)'] ]);
+  planParentLink(plan,S.may,'May Stokes',[ [S.arthur,'Arthur Summerfield (b. 1882)'], [S.janeStokes,'Jane Stokes (b. 1878)'] ]);
+  planMerge(plan,{given:'Beryl',emptySurname:true,year:1927,yearRequired:true},'unsurnamed Beryl (b. 1927)',{given:'Beryl',surname:'Farr'},'Beryl Farr');
+  planMerge(plan,{given:['Derrick Charles','Derrick'],emptySurname:true,year:1927,yearRequired:true},'unsurnamed Derrick Charles (b. 1927)',{given:['Derek','Derrick'],surname:'Farr'},'Derek Farr');
+  planMerge(plan,{given:['Kathleen','Kath'],emptySurname:true,year:1930,yearRequired:true},'unsurnamed Kathleen (b. 1930)',{given:['Kath','Kathleen'],surname:'Farr'},'Kath Farr');
+  planMerge(plan,{given:'Vera',emptySurname:true,year:1934,yearRequired:true},'unsurnamed Vera (b. 1934)',{given:'Vera',surname:'Farr'},'Vera Farr');
+  const ta=findBySpec({given:'Thomas Albert',emptySurname:true,year:1925,yearRequired:false});
+  if(ta.ok)plan.info.push('Thomas Albert\'s surname was left as it is (the GEDCOM does not give a surname).');
+  else if(ta.ambiguous)plan.skipped.push('Thomas Albert was left unchanged: more than one person matches that name.');
+  plan.info.push('William Finch was not added as a father of May Stokes.');
+  planPartnerBothWays(plan,S.robert,'Robert Turner (b. 1936)',S.jean,'Jean Farr (b. 1936)');
+  planAddNote(plan,S.robert,'Robert Turner (b. 1936)',WEDDING_CONFLICT_NOTE,'the wedding-date conflict note');
+  planAddNote(plan,S.jean,'Jean Farr (b. 1936)',WEDDING_CONFLICT_NOTE,'the wedding-date conflict note');
+  planFillFields(plan,S.robert,'Robert Turner (b. 1936)',REPAIR_DATES.robert);
+  planFillFields(plan,S.jean,'Jean Farr (b. 1936)',REPAIR_DATES.jean);
+  planFillFields(plan,S.samuel,'Samuel Thomas Farr',REPAIR_DATES.samuel);
+  planFillFields(plan,S.may,'May Stokes',REPAIR_DATES.may);
+  planAddNote(plan,S.may,'May Stokes',MAY_FATHER_NOTE,'the uncertain-father note');
+  return plan
+}
+async function applyAncestryRepair(actions){
+  const applied=[],skipped=[],dirty={},mediaDirty={};
+  const get=id=>{if(!id)return null;if(dirty[id]&&dirty[id]._deleted)return null;if(!dirty[id]){const p=P()[id];if(!p)return null;dirty[id]=structuredClone(p)}return dirty[id]};
+  const live=id=>get(id)||P()[id];
+  for(const act of actions){
+    try{
+      if(act.kind==='parents'){
+        const t=get(act.child);if(!t){skipped.push(act.text+' — person no longer found.');continue}
+        const cur=(t.parents||[]).filter(id=>live(id));
+        let changed=false;
+        for(const gp of act.parents){
+          if(!live(gp)||cur.includes(gp)||gp===t.id)continue;
+          if(isWilliamFinch(live(gp)))continue;
+          const ph=cur.find(id=>live(id)&&live(id).unknown);
+          if(cur.length<2){cur.push(gp);changed=true}
+          else if(ph){cur[cur.indexOf(ph)]=gp;changed=true}
+          else{skipped.push('Could not add a parent to '+describePerson(t)+' — they already have two parents.');changed=false;break}
+        }
+        if(changed){t.parents=[...new Set(cur)].slice(0,2);applied.push(act.text)}
+        else if(!act.parents.every(id=>cur.includes(id))){/* skipped already recorded */}
+        else applied.push(act.text+' (already in place)')
+      }else if(act.kind==='partner'){
+        const a=get(act.a),b=get(act.b);if(!a||!b){skipped.push(act.text+' — person no longer found.');continue}
+        a.spouses=[...new Set([...(a.spouses||[]),b.id])];b.spouses=[...new Set([...(b.spouses||[]),a.id])];
+        applied.push(act.text)
+      }else if(act.kind==='fill'){
+        const t=get(act.id);if(!t){skipped.push(act.text+' — person no longer found.');continue}
+        let n=0;for(const [k,v] of Object.entries(act.fields)){if(k==='deceased'){if(v){t.deceased=true;n++}continue}if(!t[k]&&v){t[k]=v;n++}}
+        if(n)applied.push(act.text);else skipped.push(act.text+' — fields were no longer blank, nothing overwritten.')
+      }else if(act.kind==='note'){
+        const t=get(act.id);if(!t){skipped.push(act.text+' — person no longer found.');continue}
+        if(String(t.notes||'').includes(act.note)){applied.push(act.text+' (already present)');continue}
+        absorbNotes(t,act.note);applied.push(act.text)
+      }else if(act.kind==='merge'){
+        const src=get(act.src),dst=get(act.dst);
+        if(!src){skipped.push(act.text+' — the unsurnamed person is no longer on the tree.');continue}
+        if(!dst){skipped.push(act.text+' — the existing person is no longer on the tree.');continue}
+        if(src.id===dst.id){applied.push(act.text+' (already the same person)');continue}
+        for(const f of ['birth','birthPlace','death','deathPlace'])if(!dst[f]&&src[f])dst[f]=src[f];
+        if((!dst.sex||dst.sex==='U')&&src.sex&&src.sex!=='U')dst.sex=src.sex;
+        if(src.deceased)dst.deceased=true;
+        if(dst.order==null&&src.order!=null)dst.order=src.order;
+        absorbNotes(dst,src.notes);
+        dst.spouses=[...new Set([...(dst.spouses||[]),...(src.spouses||[])])].filter(id=>id!==src.id&&id!==dst.id);
+        dst.marr={...(src.marr||{}),...(dst.marr||{})};delete dst.marr[src.id];delete dst.marr[dst.id];
+        if(src.rel||dst.rel){dst.rel={...(src.rel||{}),...(dst.rel||{})};delete dst.rel[src.id];delete dst.rel[dst.id]}
+        dst.photos=[...new Set([...(dst.photos||[]),...(src.photos||[])])];
+        dst.docs=[...new Set([...(dst.docs||[]),...(src.docs||[])])];
+        if(!dst.portrait&&src.portrait)dst.portrait=src.portrait;
+        if(!dst.video&&src.video)dst.video=src.video;
+        for(const mid of [...(src.photos||[]),...(src.docs||[]),src.video,src.portrait].filter(Boolean)){
+          const m=M()[mid];if(m){const q=structuredClone(mediaDirty[mid]||m);q.person=dst.id;mediaDirty[mid]=q}
+        }
+        for(const p of Object.values(P())){
+          if(p.id===src.id||p.id===dst.id)continue;
+          const q=get(p.id);if(!q||q._deleted)continue;
+          let ch=false;
+          if((q.parents||[]).includes(src.id)){q.parents=[...new Set((q.parents||[]).map(id=>id===src.id?dst.id:id))];ch=true}
+          if((q.spouses||[]).includes(src.id)){
+            q.spouses=[...new Set((q.spouses||[]).map(id=>id===src.id?dst.id:id))].filter(id=>id!==q.id);
+            if(q.marr&&q.marr[src.id]&&!q.marr[dst.id])q.marr[dst.id]=q.marr[src.id];
+            if(q.rel&&q.rel[src.id]&&!q.rel[dst.id])q.rel[dst.id]=q.rel[src.id];
+            if(q.marr)delete q.marr[src.id];if(q.rel)delete q.rel[src.id];ch=true}
+          void ch
+        }
+        src._deleted=true;
+        applied.push(act.text)
+      }
+    }catch(e){console.error('repair',act,e);skipped.push(act.text+' — something went wrong and this change was not applied.')}
+  }
+  const seen=new Set();
+  for(const p of Object.values(dirty)){
+    if(!p||p._deleted||seen.has(p.id))continue;seen.add(p.id);
+    delete p._deleted;
+    if(JSON.stringify(p)!==JSON.stringify(P()[p.id]))await store.put('persons',p.id,p)
+  }
+  for(const [mid,m] of Object.entries(mediaDirty))await store.put('media',mid,m);
+  for(const p of Object.values(dirty)){if(p&&p._deleted)await store.del('persons',p.id)}
+  return{applied,skipped}
+}
+function listHtml(title,items,empty){if(!items.length)return empty?'':`<p style="font-size:14px;color:var(--mut)">${esc(empty)}</p>`;
+  return `<p style="margin:12px 0 4px"><b>${esc(title)}</b></p><ul style="margin:0;padding-left:1.2em;font-size:14px">${items.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>`}
+function showUnappliedLinks(items){
+  dlg(`<h2>Some links were not applied</h2>
+    <p>The import finished, but these parent or partner links from the file were left out. Nobody already in the tree was deleted. You can fix a link by hand, or use <b>Repair ancestry links from the November 2026 import</b> in the More menu if this was that import.</p>
+    ${listHtml('Not applied',items)}`,()=>true,{saveLabel:'OK'})}
+async function openAncestryRepair(){
+  if(VIEW)return toast(ROMSG);
+  const plan=planAncestryRepair();
+  if(!plan.actions.length){
+    dlg(`<h2>Repair ancestry links from the November 2026 import</h2>
+      <p>Nothing needs changing. This tree already has these parent links, merged siblings, notes and blank dates filled, or the people could not be matched uniquely.</p>
+      ${listHtml('Already in place',plan.already)}${listHtml('Skipped',plan.skipped)}${listHtml('Notes',plan.info)}`,()=>true,{saveLabel:'Done'});
+    return plan}
+  dlg(`<h2>Repair ancestry links from the November 2026 import</h2>
+    <p>These changes will be made on this device and then copied to the cloud. A full backup (with photos and documents) is downloaded first. Blank dates and notes are filled in; nothing already filled in is overwritten. You can press this again later — it is safe if a change is already done.</p>
+    ${listHtml('Changes to apply',plan.actions.map(a=>a.text))}${listHtml('Already in place',plan.already)}${listHtml('Skipped',plan.skipped)}${listHtml('Notes',plan.info)}`,
+    async()=>{
+      try{
+        toast('Downloading a full backup first…',4000);
+        await exportJSON();
+      }catch(e){console.error(e);toast('The backup could not be downloaded. Nothing was changed.');return false}
+      const r=await applyAncestryRepair(plan.actions);
+      const pending=store.pendingCount?store.pendingCount():0;
+      toast(r.applied.length?`Repair applied: ${r.applied.length} change(s).`:'Repair finished with no changes.',5000);
+      setTimeout(()=>dlg(`<h2>Repair finished</h2>
+        ${listHtml('Applied',r.applied)}${listHtml('Skipped',r.skipped)}
+        <p style="font-size:14px;color:var(--mut);margin-top:12px">${pending?'Stay on this page until the status line shows the changes have uploaded, so an older copy on another device cannot overwrite them.':'Changes are saved on this device'+(store.firebase&&store.firebase()?' and are being copied to the cloud.':' (demo or local only).')}</p>`,()=>true,{saveLabel:'Done'}),0);
+      return true
+    },{saveLabel:'Download backup and apply'});
+  return plan
+}
+
 $('#bMenu').onclick=()=>{
   const bytes=Object.values(M()).reduce((s,m)=>s+(m.size||0)*1.34+(m.thumb?.length||0),0);
   if(VIEW){dlg(`<h2>More</h2><p>${ROMSG} Ask the family tree's owner if something needs changing.</p><div class="pick">
@@ -852,6 +1113,7 @@ $('#bMenu').onclick=()=>{
    <button class="b" id="mShare">👁 Share view-only (for family)</button>
    <button class="b" id="mGed">⬇ Export GEDCOM (for Ancestry, FamilySearch…)</button>
    <button class="b" id="mGedIn">⬆ Import GEDCOM (.ged) from Ancestry, FamilySearch…</button>
+   <button class="b" id="mRepair">🔧 Repair ancestry links from the November 2026 import</button>
    <button class="b" id="mJson">⬇ Download full backup (with photos &amp; documents)</button>
    <button class="b" id="mJsonIn">⬆ Restore a backup</button>
    <button class="b" id="mLock">🔒 Lock this device (asks for the passcode next time)</button></div>
@@ -859,10 +1121,10 @@ $('#bMenu').onclick=()=>{
    Status: ${esc($('#status').textContent)}${store.pendingCount()?` · ${store.pendingCount()} change(s) waiting to upload`:''}<br>
    App version ${esc(APP_VER)}</p>`,()=>true,{saveLabel:'Done'});
   $('#mShare').onclick=()=>shareDialog();$('#mGed').onclick=exportGedcom;$('#mJson').onclick=exportJSON;
-  $('#mGedIn').onclick=()=>pickFile('.ged,text/plain',importGedcom);$('#mJsonIn').onclick=()=>pickFile('.json,application/json',importJSON);
+  $('#mGedIn').onclick=()=>pickFile('.ged,text/plain',importGedcom);$('#mRepair').onclick=()=>openAncestryRepair();$('#mJsonIn').onclick=()=>pickFile('.json,application/json',importJSON);
   $('#mLock').onclick=()=>{if(DEMO)return toast('Demo mode has no passcode.');if(confirm('Lock this device? You will need the family passcode to open the tree again. Nothing is deleted.')){localStorage.removeItem('tpt:room');location.reload()}};
 };
 addEventListener('keydown',e=>{if(e.key==='Escape'){$('#dlg').classList.remove('open');$('#vX')?.click()}});
 
-window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,get publisher(){return publisher},get view(){return VIEW},APP_VER,assignGens,conflicts:()=>L.conflicts||[]};
+window.__tree={get store(){return store},layout:()=>L,select,get camera(){return camera},get controls(){return controls},nodes:()=>nodes,exportGedcom,parseGedcom,addMedia,findDups,mergeGedcom,planAncestryRepair,applyAncestryRepair,openAncestryRepair,get publisher(){return publisher},get view(){return VIEW},APP_VER,assignGens,conflicts:()=>L.conflicts||[]};
 boot();
