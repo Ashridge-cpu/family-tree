@@ -521,6 +521,7 @@ function renderDetails(){
     ${!par.length&&!sp.length&&!kids.length&&!sib.length?'<div style="color:var(--mut)">No relatives linked yet.</div>':''}
     ${VIEW?'':'<div style="margin-top:6px"><button class="mini" data-do="link">🔗 Link to someone already in the tree</button></div>'}
    </div>
+   ${noteFlags(p).length?`<div class="sec flag">${noteFlags(p).map(l=>esc(l)).join('<br>')}</div>`:''}
    <div class="sec"><h3>Notes ${VIEW?'':'<button class="mini" data-do="edit">Edit</button>'}</h3><div class="notes">${esc(p.notes)||'<span style="color:var(--mut)">No notes yet.</span>'}</div></div>
    ${VIEW?viewPortraitHTML(p):`<div class="sec"><h3>Gallery <button class="mini" data-do="addphoto">+ Add photos</button></h3>
     <div class="grid">${photos.map(x=>`<div class="th" data-view="${x}" style="background-image:url('${M()[x].thumb}')">${p.portrait===x?'<span class="star" title="Portrait">★</span>':''}</div>`).join('')||'<span style="color:var(--mut);grid-column:1/-1">No photos yet.</span>'}</div></div>
@@ -729,13 +730,24 @@ function parseGedcom(txt){
     if(p.given==='Unknown'&&!p.surname)p.unknown=true;
     p._ged=r.id;p._alt=subs(r,'NAME').map(n=>n.val.replace(/\/.*$/,'').trim()).filter(Boolean);people[p.id]=p;map[r.id]=p.id}
   for(const f of Object.values(recs).filter(r=>r.tag==='FAM')){const h=map[sub(f,'HUSB')?.val],w=map[sub(f,'WIFE')?.val];const par=[h,w].filter(Boolean);
-    if(h&&w){people[h].spouses.push(w);people[w].spouses.push(h);const M=sub(f,'MARR');if(M){const t=[fromGedDate(sub(M,'DATE')?.val),sub(M,'PLAC')?.val].filter(Boolean).join(', ');if(t){people[h].marr[w]=t;people[w].marr[h]=t}}
+    if(h&&w){people[h].spouses.push(w);people[w].spouses.push(h);const M=sub(f,'MARR');
+      const takeNotes=n=>subs(n,'NOTE').map(x=>x.val.startsWith('@')?(recs[x.val]?.val||''):x.val).filter(Boolean).join('\n');
+      if(M){const date=fromGedDate(sub(M,'DATE')?.val),plac=sub(M,'PLAC')?.val||'',mnote=takeNotes(M);
+        let t=[date,plac].filter(Boolean).join(', ');
+        if(!date&&mnote){const compact=mnote.split('\n')[0].replace(/^(Conflict|Uncertain):\s*/i,'').trim();t=[compact,plac].filter(Boolean).join(', ')}
+        if(t){people[h].marr[w]=t;people[w].marr[h]=t}
+        if(mnote)for(const id of [h,w]){if(!people[id].notes.includes(mnote))people[id].notes=(people[id].notes?people[id].notes+'\n\n':'')+mnote}}
+      const famNote=takeNotes(f);if(famNote)for(const id of [h,w]){if(!people[id].notes.includes(famNote))people[id].notes=(people[id].notes?people[id].notes+'\n\n':'')+famNote}
       const DV=sub(f,'DIV')||sub(f,'ANUL'),SP=sub(f,'_SEPR')||sub(f,'_SEP')||sub(f,'SEPR');
       if(DV&&DV.val!=='N'||SP){const st=DV&&DV.val!=='N'?'divorced':'separated',end=fromGedDate(sub(DV&&DV.val!=='N'?DV:SP,'DATE')?.val||'');
         people[h].rel={...(people[h].rel||{}),[w]:{status:st,end}};people[w].rel={...(people[w].rel||{}),[h]:{status:st,end}}}}
     subs(f,'CHIL').forEach(c=>{const id=map[c.val];if(id)people[id].parents=[...new Set([...people[id].parents,...par])].slice(0,2)})}
   return Object.values(people);
 }
+function absorbNotes(t,incoming){if(!incoming)return;if(!t.notes){t.notes=incoming;return}
+  const extra=String(incoming).split(/\n{2,}/).map(s=>s.trim()).filter(Boolean).filter(b=>!t.notes.includes(b));
+  if(extra.length)t.notes=(t.notes+'\n\n'+extra.join('\n\n')).slice(0,20000)}
+function noteFlags(p){return String(p?.notes||'').split(/\n+/).map(s=>s.trim()).filter(l=>/^(Conflict|Uncertain):/i.test(l))}
 // GEDCOM import (owner only): preview counts and likely duplicates, then merge into the existing tree.
 const normN=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/".*?"/g,' ').replace(/[^a-z ]/g,' ').trim();
 const firstN=p=>normN(p.given).replace(/^(vice admiral sir|lt col|sir|rev|dr|mr|mrs|miss|ms)\s+/,'').split(/\s+/)[0]||'';
@@ -756,7 +768,7 @@ async function importGedcom(file){if(VIEW)return toast(ROMSG);
   dlg(`<h2>Import "${esc(file.name)}"</h2>
     <p>Found <b>${people.length}</b> people and <b>${fams.size}</b> families. <b>${dn}</b> look like people already in the tree (same name and birth year).</p>
     ${dn?`<div style="max-height:40vh;overflow:auto"><table style="width:100%;font-size:14px;border-collapse:collapse"><tr><th align="left">In the file</th><th align="left">Already in the tree</th><th></th></tr>${people.filter(q=>dups[q.id]).map(row).join('')}</table></div>
-     <p style="font-size:13px;color:var(--mut)">"Link" keeps the existing person (their photos, notes and links stay as they are), fills in any blank dates or places, and joins them to their relatives from the file. "Skip" leaves them and their links out.</p>`:''}
+     <p style="font-size:13px;color:var(--mut)">"Link" keeps the existing person (their photos, existing notes and links stay as they are), fills in any blank dates or places, adds any new conflict or uncertainty notes, and joins them to their relatives from the file. "Skip" leaves them and their links out.</p>`:''}
     <p style="font-size:13px;color:var(--mut)">Nothing already in the tree is deleted or overwritten. No photos are imported. Tip: download a backup first (More → Download full backup).</p>`,
     async()=>{const choice={};$$('[data-dup]').forEach(s=>choice[s.dataset.dup]=s.value);const r=await mergeGedcom(people,dups,choice);
       toast(`Imported: ${r.added} added, ${r.linked} linked to existing people${r.skipped?`, ${r.skipped} skipped`:''}${r.conflicts?`. ${r.conflicts} parent link(s) left out because that person already has two parents`:''}.`,6000)},{saveLabel:'Import'});
@@ -768,7 +780,7 @@ async function mergeGedcom(people,dups,choice){
     if(c==='skip'){idmap[q.id]=null;stat.skipped++}
     else if(c==='link'){const e=dups[q.id].match;idmap[q.id]=e;stat.linked++;const t=get(e);
       for(const f of ['birth','birthPlace','death','deathPlace'])if(!t[f]&&q[f])t[f]=q[f];if((!t.sex||t.sex==='U')&&q.sex&&q.sex!=='U')t.sex=q.sex;if(q.deceased)t.deceased=true;
-      if(q.notes&&!t.notes)t.notes=q.notes}
+      absorbNotes(t,q.notes)}
     else{idmap[q.id]=q.id;stat.added++;const n=blank({given:q.given,surname:q.surname,sex:q.sex,birth:q.birth,birthPlace:q.birthPlace,death:q.death,deathPlace:q.deathPlace,deceased:q.deceased,notes:q.notes,unknown:q.unknown});n.id=q.id;delete n.unknown;if(q.unknown)n.unknown=true;out[n.id]=n}}
   const map=x=>idmap[x];
   for(const q of people){const me=map(q.id);if(!me)continue;const t=get(me);
@@ -776,7 +788,8 @@ async function mergeGedcom(people,dups,choice){
     for(const gp of q.parents.map(map).filter(Boolean)){const cur=(t.parents||[]).filter(i=>out[i]||P()[i]);if(cur.includes(gp)||gp===me)continue;
       const ph=cur.find(i=>(out[i]||P()[i]).unknown);if(cur.length<2)t.parents=[...cur,gp];else if(ph)t.parents=[...cur.filter(i=>i!==ph),gp];else stat.conflicts++}
     for(const gs of q.spouses){const sp=map(gs);if(!sp||sp===me)continue;t.spouses=[...new Set([...(t.spouses||[]),sp])];
-      if(q.marr?.[gs]&&!t.marr?.[sp])t.marr={...(t.marr||{}),[sp]:q.marr[gs]};
+      if(q.marr?.[gs]){if(!t.marr?.[sp])t.marr={...(t.marr||{}),[sp]:q.marr[gs]};
+        else if(/conflict|uncertain/i.test(q.marr[gs])&&!/conflict|uncertain/i.test(t.marr[sp]))absorbNotes(t,q.marr[gs])}
       if(q.rel?.[gs]&&!t.rel?.[sp])t.rel={...(t.rel||{}),[sp]:q.rel[gs]}}}
   for(const t of Object.values(out)){delete t._ged;delete t._alt;if(JSON.stringify(t)!==JSON.stringify(P()[t.id]))await store.put('persons',t.id,t)}
   return stat}
