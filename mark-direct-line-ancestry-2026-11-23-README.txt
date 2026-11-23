@@ -44,3 +44,22 @@ Firebase rules from:
   https://ashridge-cpu.github.io/family-tree/firestore-rules.txt
 
 into the Firebase console, as already documented for the app.
+
+If you have already imported this file
+--------------------------------------
+If some great-grandparents were not joined to their parents, or
+Jean's siblings were added twice (once unsurnamed, once as Farr),
+use the in-app repair instead of importing again:
+
+1. Refresh the family tree so you have the latest app version
+   (check the version number at the bottom of the More menu).
+
+2. Open More, then tap "Repair ancestry links from the November
+   2026 import". Read the preview. The repair downloads a new
+   full backup first, then applies only the listed changes.
+   It fills blank dates and notes only; it does not overwrite
+   what is already filled in. It is safe to press again.
+
+3. Stay on the page until the status line shows the changes have
+   uploaded, so an older copy on another device cannot overwrite
+   them. Then check the people in the preview.
