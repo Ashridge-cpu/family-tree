@@ -88,22 +88,37 @@ export async function createStore(room,{demo=false,base='trees',readOnly=false,o
       if(window.BS_FIREBASE_CONFIG.emulatorHost){const [h,p]=window.BS_FIREBASE_CONFIG.emulatorHost.split(':');try{fs.connectFirestoreEmulator(fdb,h,+p)}catch(e){}}
       fb={fs,db:fdb,unsubs:[]};
       const seen={};
+      // Process one snapshot at a time, always the latest, so an older async callback
+      // cannot finish last and roll back newer local or later-server state.
+      const snapTail={}; const snapLatest={};
+      async function applySnapshot(c,snap){
+        if(snap.metadata.fromCache)return;
+        blocked=false; let changed=false; const server={};
+        snap.forEach(d=>{if(!d.metadata.hasPendingWrites)server[d.id]=d.data()});
+        for(const [id,s] of Object.entries(server)){
+          const k=c+'/'+id, l=data[c][id], p=pending.get(k);
+          if(p==='del')continue;                               // our delete wins; pushed by flush
+          // Keep any newer local copy, even if pending was already cleared — a stale
+          // snapshot can otherwise overwrite a just-written repair.
+          if(l&&(l.updatedAt||0)>(s.updatedAt||0))continue;
+          if(p==='put'&&l&&(l.updatedAt||0)>=(s.updatedAt||0))continue;   // our newer edit; pushed by flush
+          if(!l||JSON.stringify(l)!==JSON.stringify(s)){data[c][id]=s;await idbPut(c,id,s);changed=true}
+          if(p==='put')await clearPending(k);
+        }
+        for(const id of Object.keys(data[c])) if(!(id in server)&&!pending.has(c+'/'+id)&&!snap.metadata.hasPendingWrites){
+          delete data[c][id];await idbDel(c,id);changed=true}   // deleted on the other device
+        seen[c]=true; if(COLLS.every(x=>seen[x])&&!serverSeen){serverSeen=true;flush()}
+        if(changed)onChange(c); recompute();
+      }
       COLLS.forEach(c=>{
-        fb.unsubs.push(fs.onSnapshot(fs.collection(fdb,base,room,c),{includeMetadataChanges:true},async snap=>{
-          if(snap.metadata.fromCache)return;
-          blocked=false; let changed=false; const server={};
-          snap.forEach(d=>{if(!d.metadata.hasPendingWrites)server[d.id]=d.data()});
-          for(const [id,s] of Object.entries(server)){
-            const k=c+'/'+id, l=data[c][id], p=pending.get(k);
-            if(p==='del')continue;                               // our delete wins; pushed by flush
-            if(p==='put'&&l&&(l.updatedAt||0)>=(s.updatedAt||0))continue;   // our newer edit; pushed by flush
-            if(!l||JSON.stringify(l)!==JSON.stringify(s)){data[c][id]=s;await idbPut(c,id,s);changed=true}
-            if(p==='put')await clearPending(k);
-          }
-          for(const id of Object.keys(data[c])) if(!(id in server)&&!pending.has(c+'/'+id)&&!snap.metadata.hasPendingWrites){
-            delete data[c][id];await idbDel(c,id);changed=true}   // deleted on the other device
-          seen[c]=true; if(COLLS.every(x=>seen[x])&&!serverSeen){serverSeen=true;flush()}
-          if(changed)onChange(c); recompute();
+        snapTail[c]=Promise.resolve();
+        fb.unsubs.push(fs.onSnapshot(fs.collection(fdb,base,room,c),{includeMetadataChanges:true},snap=>{
+          snapLatest[c]=snap;
+          snapTail[c]=snapTail[c].then(async()=>{
+            const s=snapLatest[c]; if(!s)return; if(s!==snap)return; // a newer snapshot is queued
+            snapLatest[c]=null;
+            try{await applySnapshot(c,s)}catch(e){console.warn('snapshot apply',c,e)}
+          });
         },err=>{console.warn('snapshot',c,err);if(String(err.code||err).includes('permission'))blocked=true;recompute()}));
       });
     }catch(e){console.warn('Firebase unavailable, staying local',e);fb=null}
